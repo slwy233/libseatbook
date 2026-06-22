@@ -13,7 +13,6 @@ import BuildingListScreen from './src/screens/BuildingListScreen';
 import RoomListScreen from './src/screens/RoomListScreen';
 import SeatMapScreen from './src/screens/SeatMapScreen';
 import MyReservationsScreen from './src/screens/MyReservationsScreen';
-import ScheduledScreen from './src/screens/ScheduledScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -46,29 +45,30 @@ function MainTabs() {
 export default function App() {
   const [initialRoute, setInitialRoute] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [forceReLogin, setForceReLogin] = useState(false);
-  const navRef = useRef(null);
+  const navigationRef = useRef(null);
 
   useEffect(() => {
-    // 设置token过期回调：自动重登8次失败后，弹窗并回到登录页
+    // 设置token过期回调
     onTokenExpired((needManual) => {
-      if (navRef.current) {
-        Alert.alert(
-          '登录已过期',
-          needManual
-            ? '自动重登失败，请手动输入验证码重新登录'
-            : '登录状态已过期，请重新登录',
-          [
-            {
+      setTimeout(() => {
+        if (navigationRef.current) {
+          Alert.alert(
+            '登录已过期',
+            needManual
+              ? '自动重登失败，请手动输入验证码重新登录'
+              : '登录状态已过期，请重新登录',
+            [{
               text: '重新登录',
               onPress: () => {
-                setForceReLogin(true);
-                setInitialRoute('Login');
+                navigationRef.current.reset({
+                  index: 0,
+                  routes: [{ name: 'Login', params: { forceReLogin: true } }],
+                });
               },
-            },
-          ]
-        );
-      }
+            }]
+          );
+        }
+      }, 300);
     });
   }, []);
 
@@ -89,20 +89,18 @@ export default function App() {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1677FF' }}>
         <ActivityIndicator size="large" color="#fff" />
-        <Text style={{ color: '#fff', marginTop: 16, fontSize: 16 }}>加载中...</Text>
       </View>
     );
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <StatusBar style="light" />
       <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="Login" component={LoginScreen} initialParams={{ forceReLogin }} />
+        <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Main" component={MainTabs} />
         <Stack.Screen name="RoomList" component={RoomListScreen} />
         <Stack.Screen name="SeatMap" component={SeatMapScreen} />
-        <Stack.Screen name="Scheduled" component={ScheduledScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

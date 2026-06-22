@@ -2,7 +2,6 @@ import CryptoJS from 'crypto-js';
 
 export const DEFAULT_KEY = 'server_date_time';
 export const DEFAULT_IV = 'client_date_time';
-const HMAC_KEY = 'fkJlSwDn467GnoE4nWHNlg==';
 
 /**
  * AES-CBC 加密

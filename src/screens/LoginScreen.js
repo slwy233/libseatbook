@@ -16,7 +16,7 @@ import { login, getCaptcha, initSystemConfig } from '../api/client';
 import { autoLoginWithCaptcha } from '../utils/ocr';
 import { saveCredentials, getCredentials, saveUserInfo } from '../utils/storage';
 
-export default function LoginScreen({ navigation }) {
+export default function LoginScreen({ navigation, route }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -43,6 +43,19 @@ export default function LoginScreen({ navigation }) {
       try { await initSystemConfig(); } catch (e) {}
     })();
   }, []);
+
+  // 强制重登参数处理：自动重登8次失败后，直接显示手动验证码模式
+  const didCheckForce = useRef(false);
+  useEffect(() => {
+    if (route?.params?.forceReLogin && !didCheckForce.current) {
+      didCheckForce.current = true;
+      setManualMode(true);
+      // 延迟获取验证码，确保mount完成
+      setTimeout(() => {
+        if (username.trim()) fetchCaptcha();
+      }, 500);
+    }
+  }, [route?.params?.forceReLogin, username]);
 
   // 手动获取验证码
   const fetchCaptcha = async () => {
@@ -102,7 +115,7 @@ export default function LoginScreen({ navigation }) {
       const result = await autoLoginWithCaptcha(
         async () => await getCaptcha(username.trim()),
         async (cid, ctext) => await login(username.trim(), password, cid, ctext),
-        5,
+        5, // maxRetries
         (attempt, status, msg) => {
           setAutoAttempt(attempt);
           setAutoStatus(msg);
@@ -181,7 +194,7 @@ export default function LoginScreen({ navigation }) {
               ref={passwordRef}
               style={styles.input}
               placeholder="请输入密码"
-              value={password}
+              defaultValue={password}
               onChangeText={setPassword}
               secureTextEntry
               returnKeyType="done"

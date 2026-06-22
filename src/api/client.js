@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import { encrypt, makeHmacHeaders } from '../utils/crypto';
 import { getToken, saveToken, getSystemInfo, saveSystemInfo } from '../utils/storage';
+import { handleTokenExpired } from '../utils/authManager';
 
 // 移动端直连；Web端通过本地代理绕过浏览器CORS
 // Web: 需要先在终端运行 npx local-cors-proxy --proxyUrl https://libseat.tjcu.edu.cn --port 8010
@@ -42,20 +43,20 @@ async function fetchSysInfo() {
  */
 async function post(path, data = {}, needAuth = true) {
   const url = `${BASE_URL}${path}`;
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {
+    'Content-Type': 'application/json',
+    'logintype': 'PC',
+  };
 
   if (needAuth) {
     const token = await getToken();
     if (token) headers['token'] = token;
   }
 
-  // HMAC 签名
+  // HMAC 签名 — 认证API强制要求
   const sysInfo = await ensureSystemInfo();
   if (sysInfo && sysInfo.hmac === 1) {
-    const hmacHeaders = makeHmacHeaders('POST', data);
-    headers['nonce'] = hmacHeaders.nonce;
-    headers['date'] = hmacHeaders.date;
-    headers['digest'] = hmacHeaders.digest;
+    Object.assign(headers, makeHmacHeaders('POST', sysInfo));
   }
 
   const body = JSON.stringify(data);
@@ -68,11 +69,33 @@ async function post(path, data = {}, needAuth = true) {
 
   const json = await resp.json();
 
-  // 处理 token 过期 (code 20003)
-  if (json.code === '20003' || json.status === false) {
-    if (json.code === '20003') {
-      throw new Error('TOKEN_EXPIRED');
+  // 处理 token 过期 (code 20003) — 自动重登并重试一次
+  if (json.code === '20003' && needAuth) {
+    const reloginResult = await handleTokenExpired();
+    if (reloginResult.success) {
+      // 重登成功 — 更新token后重试本次请求
+      const newToken = await getToken();
+      if (newToken) headers['token'] = newToken;
+      // 重新签名
+      const sysInfo2 = await ensureSystemInfo();
+      if (sysInfo2 && sysInfo2.hmac === 1) {
+        Object.assign(headers, makeHmacHeaders('POST', sysInfo2));
+      }
+      const retryResp = await fetch(url, { method: 'POST', headers, body });
+      const retryJson = await retryResp.json();
+      if (retryJson.code === '20003' || retryJson.status === false) {
+        throw new Error('TOKEN_EXPIRED');
+      }
+      return retryJson;
     }
+    throw new Error('TOKEN_EXPIRED');
+  }
+
+  if (json.code === '20003') {
+    throw new Error('TOKEN_EXPIRED');
+  }
+  if (json.status === false) {
+    throw new Error(json.message || '请求失败');
   }
 
   return json;
@@ -87,6 +110,7 @@ export async function getCaptcha(username) {
     const url = `${BASE_URL}/static/public/cg/generateCaptcha/${username}`;
     xhr.open('POST', url, true);
     xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('loginType', 'PC');
     xhr.timeout = 10000;
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 4) return;
@@ -128,7 +152,6 @@ export async function login(username, password, captchaId, captchaText) {
       captchaId: captchaId || '',
       captchaText: captchaText || '-1',
     },
-    loginType: 'PC',
   }, false);
 
   if (json.status && json.data) {

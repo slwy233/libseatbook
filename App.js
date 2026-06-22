@@ -1,13 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text, View, ActivityIndicator } from 'react-native';
+import { Text, View, ActivityIndicator, Alert } from 'react-native';
 import { getToken } from './src/utils/storage';
+import { onTokenExpired } from './src/utils/authManager';
 
 import LoginScreen from './src/screens/LoginScreen';
 import HomeScreen from './src/screens/HomeScreen';
+import BuildingListScreen from './src/screens/BuildingListScreen';
 import RoomListScreen from './src/screens/RoomListScreen';
 import SeatMapScreen from './src/screens/SeatMapScreen';
 import MyReservationsScreen from './src/screens/MyReservationsScreen';
@@ -16,13 +18,8 @@ import ScheduledScreen from './src/screens/ScheduledScreen';
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
 
-// Tab 图标 (纯文字 fallback)
 function TabIcon({ emoji, focused }) {
-  return (
-    <Text style={{ fontSize: focused ? 24 : 20, opacity: focused ? 1 : 0.5 }}>
-      {emoji}
-    </Text>
-  );
+  return <Text style={{ fontSize: focused ? 22 : 18, opacity: focused ? 1 : 0.5 }}>{emoji}</Text>;
 }
 
 function MainTabs() {
@@ -32,43 +29,16 @@ function MainTabs() {
         headerShown: false,
         tabBarActiveTintColor: '#1677FF',
         tabBarInactiveTintColor: '#999',
-        tabBarStyle: {
-          borderTopWidth: 1,
-          borderTopColor: '#f0f0f0',
-          paddingTop: 6,
-          paddingBottom: 8,
-          height: 60,
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '500',
-        },
+        tabBarStyle: { borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 6, paddingBottom: 8, height: 60 },
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '500' },
       }}
     >
-      <Tab.Screen
-        name="Home"
-        component={HomeScreen}
-        options={{
-          tabBarLabel: '首页',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="🏠" focused={focused} />,
-        }}
-      />
-      <Tab.Screen
-        name="Scheduled"
-        component={ScheduledScreen}
-        options={{
-          tabBarLabel: '定时预约',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="⏰" focused={focused} />,
-        }}
-      />
-      <Tab.Screen
-        name="Reservations"
-        component={MyReservationsScreen}
-        options={{
-          tabBarLabel: '我的预约',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="📋" focused={focused} />,
-        }}
-      />
+      <Tab.Screen name="Home" component={HomeScreen}
+        options={{ tabBarLabel: '首页', tabBarIcon: ({focused}) => <TabIcon emoji="🏠" focused={focused}/> }} />
+      <Tab.Screen name="Book" component={BuildingListScreen}
+        options={{ tabBarLabel: '预约选座', tabBarIcon: ({focused}) => <TabIcon emoji="🪑" focused={focused}/> }} />
+      <Tab.Screen name="My" component={MyReservationsScreen}
+        options={{ tabBarLabel: '我的', tabBarIcon: ({focused}) => <TabIcon emoji="📋" focused={focused}/> }} />
     </Tab.Navigator>
   );
 }
@@ -76,19 +46,38 @@ function MainTabs() {
 export default function App() {
   const [initialRoute, setInitialRoute] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [forceReLogin, setForceReLogin] = useState(false);
+  const navRef = useRef(null);
 
   useEffect(() => {
-    checkLogin();
+    // 设置token过期回调：自动重登8次失败后，弹窗并回到登录页
+    onTokenExpired((needManual) => {
+      if (navRef.current) {
+        Alert.alert(
+          '登录已过期',
+          needManual
+            ? '自动重登失败，请手动输入验证码重新登录'
+            : '登录状态已过期，请重新登录',
+          [
+            {
+              text: '重新登录',
+              onPress: () => {
+                setForceReLogin(true);
+                setInitialRoute('Login');
+              },
+            },
+          ]
+        );
+      }
+    });
   }, []);
+
+  useEffect(() => { checkLogin(); }, []);
 
   const checkLogin = async () => {
     try {
       const token = await getToken();
-      if (token) {
-        setInitialRoute('Main');
-      } else {
-        setInitialRoute('Login');
-      }
+      setInitialRoute(token ? 'Main' : 'Login');
     } catch (e) {
       setInitialRoute('Login');
     } finally {
@@ -108,22 +97,12 @@ export default function App() {
   return (
     <NavigationContainer>
       <StatusBar style="light" />
-      <Stack.Navigator
-        initialRouteName={initialRoute}
-        screenOptions={{ headerShown: false }}
-      >
-        <Stack.Screen name="Login" component={LoginScreen} />
+      <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="Login" component={LoginScreen} initialParams={{ forceReLogin }} />
         <Stack.Screen name="Main" component={MainTabs} />
-        <Stack.Screen
-          name="RoomList"
-          component={RoomListScreen}
-          options={{ animation: 'slide_from_right' }}
-        />
-        <Stack.Screen
-          name="SeatMap"
-          component={SeatMapScreen}
-          options={{ animation: 'slide_from_right' }}
-        />
+        <Stack.Screen name="RoomList" component={RoomListScreen} />
+        <Stack.Screen name="SeatMap" component={SeatMapScreen} />
+        <Stack.Screen name="Scheduled" component={ScheduledScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

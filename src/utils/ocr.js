@@ -8,9 +8,6 @@
 const OCR_API = 'https://api.ocr.space/parse/image';
 const API_KEY = 'helloworld';
 
-/**
- * OCR 识别 base64 验证码图片
- */
 async function ocrImage(base64Image) {
   const imageData = base64Image.startsWith('data:')
     ? base64Image
@@ -37,23 +34,15 @@ async function ocrImage(base64Image) {
   return '';
 }
 
-/**
- * 判断是否为算式: 包含运算符
- */
 function isMathExpr(text) {
   return /[+\-×*÷/]/.test(text);
 }
 
-/**
- * 算式求解: "3-4=" → "-1"
- */
 function solveMath(text) {
   let expr = text.replace(/[=?\s]/g, '');
   expr = expr.replace(/×/g, '*').replace(/÷/g, '/').replace(/[xX]/g, '*');
-
   const m = expr.match(/(-?\d+)\s*([+\-*/])\s*(\d+)/);
   if (!m) return null;
-
   const a = parseInt(m[1], 10);
   const b = parseInt(m[3], 10);
   switch (m[2]) {
@@ -65,117 +54,77 @@ function solveMath(text) {
   }
 }
 
-/**
- * 清理字母数字结果
- */
 function cleanText(text) {
   let s = text.replace(/[\s\n\r]/g, '').replace(/[^a-zA-Z0-9]/g, '');
   if (s.length > 6) s = s.substring(0, 6);
   return s;
 }
 
-/**
- * 识别验证码: 自动判断算式/字母数字类型
- */
 export async function recognizeCaptcha(base64Image) {
   const raw = await ocrImage(base64Image);
   if (!raw) return '';
-
-  console.log(`[OCR] raw: "${raw}"`);
-
   if (isMathExpr(raw)) {
     const ans = solveMath(raw);
-    if (ans !== null) {
-      console.log(`[OCR] math: "${raw}" → "${ans}"`);
-      return ans;
-    }
+    if (ans !== null) return ans;
   }
-
-  const cleaned = cleanText(raw);
-  console.log(`[OCR] text: "${cleaned}"`);
-  return cleaned;
+  return cleanText(raw);
 }
 
 /**
- * 自动登录: 获取验证码 → OCR → 登录
- * 失败一次直接切手动输入，不浪费时间重试
- *
- * @param {Function} getCaptchaFn - () => {captchaId, captchaImage}
- * @param {Function} loginFn - (captchaId, captchaText) => {token, userInfo}
- * @param {Function} onProgress - (status, message) => void
- * @returns {{success, needManual, captchaImage, captchaId, result, message}}
+ * 自动登录: 获取验证码 → OCR → 登录，最多重试 maxRetries 次
  */
 export async function autoLoginWithCaptcha(
   getCaptchaFn,
   loginFn,
+  maxRetries = 5,
   onProgress = null
 ) {
-  // 1. 获取验证码
-  if (onProgress) onProgress('fetching', '获取验证码...');
-  let captchaData;
-  try {
-    captchaData = await getCaptchaFn();
-  } catch (e) {
-    return {
-      success: false,
-      needManual: true,
-      message: '获取验证码失败: ' + (e.message || '网络错误'),
-    };
-  }
-
-  // 2. OCR 识别
-  if (onProgress) onProgress('ocr', '识别验证码...');
-  let captchaText;
-  try {
-    captchaText = await recognizeCaptcha(captchaData.captchaImage);
-  } catch (e) {
-    captchaText = '';
-  }
-
-  if (!captchaText || captchaText.length < 1) {
-    // OCR 失败 → 直接切手动，带上验证码图片
-    return {
-      success: false,
-      needManual: true,
-      captchaImage: captchaData.captchaImage,
-      captchaId: captchaData.captchaId,
-      message: 'OCR识别失败，请手动输入验证码',
-    };
-  }
-
-  // 3. 尝试登录
-  if (onProgress) onProgress('login', `尝试登录 (${captchaText})...`);
-  try {
-    const result = await loginFn(captchaData.captchaId, captchaText);
-    if (result && result.token) {
-      return {
-        success: true,
-        needManual: false,
-        result,
-        message: '登录成功',
-      };
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    // 1. 获取验证码
+    if (onProgress) onProgress(attempt, 'fetching', `获取验证码 (第${attempt}次)...`);
+    let captchaData;
+    try {
+      captchaData = await getCaptchaFn();
+    } catch (e) {
+      if (onProgress) onProgress(attempt, 'error', `获取失败: ${e.message}`);
+      continue;
     }
-    // 验证码错误 → 手动
-    return {
-      success: false,
-      needManual: true,
-      captchaImage: captchaData.captchaImage,
-      captchaId: captchaData.captchaId,
-      message: '验证码错误，请手动输入',
-    };
-  } catch (e) {
-    const msg = e.message || '';
-    // 密码/账号错误 → 直接报，不重试
-    if (/密码|学号|账号|用户|不存在|禁用/.test(msg)) {
-      return { success: false, needManual: false, message: msg };
+
+    // 2. OCR
+    if (onProgress) onProgress(attempt, 'ocr', 'OCR识别中...');
+    let captchaText;
+    try {
+      captchaText = await recognizeCaptcha(captchaData.captchaImage);
+    } catch (e) {
+      captchaText = '';
     }
-    // 其他错误 → 手动
-    return {
-      success: false,
-      needManual: true,
-      captchaImage: captchaData.captchaImage,
-      captchaId: captchaData.captchaId,
-      message: msg || '登录失败，请手动重试',
-    };
+
+    if (!captchaText || captchaText.length < 1) {
+      if (onProgress) onProgress(attempt, 'ocr_fail', '未能识别，重试...');
+      continue;
+    }
+
+    // 3. 登录
+    if (onProgress) onProgress(attempt, 'login', `尝试登录 (${captchaText})...`);
+    try {
+      const result = await loginFn(captchaData.captchaId, captchaText);
+      if (result && result.token) {
+        if (onProgress) onProgress(attempt, 'success', '登录成功!');
+        return { success: true, needManual: false, result, message: '登录成功' };
+      }
+      if (onProgress) onProgress(attempt, 'retry', '验证码错误，重试...');
+    } catch (e) {
+      const msg = e.message || '';
+      if (/密码|学号|账号|用户|不存在|禁用/.test(msg)) {
+        return { success: false, needManual: false, message: msg };
+      }
+      if (onProgress) onProgress(attempt, 'retry', msg);
+    }
   }
+
+  return {
+    success: false,
+    needManual: true,
+    message: `自动识别 ${maxRetries} 次均失败，请手动输入`,
+  };
 }

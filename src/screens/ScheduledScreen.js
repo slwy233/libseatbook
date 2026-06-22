@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -15,15 +15,14 @@ import {
   getBuildingFloorDate,
   findRoomDuration,
   getFreeSeats,
-  getStartTimes,
-  getEndTimes,
   bookSeat,
 } from '../api/client';
 import {
   saveScheduledBookings,
   getScheduledBookings,
 } from '../utils/storage';
-import { todayDateStr, tomorrowDateStr, minutesToTimeStr } from '../utils/time';
+import { startScheduledPolling, stopScheduledPolling } from '../utils/scheduler';
+import { todayDateStr, tomorrowDateStr } from '../utils/time';
 
 export default function ScheduledScreen({ navigation }) {
   const [scheduledTasks, setScheduledTasks] = useState([]);
@@ -44,6 +43,19 @@ export default function ScheduledScreen({ navigation }) {
   useFocusEffect(
     useCallback(() => {
       loadTasks();
+      // 启动定时任务轮询
+      const loadAndPoll = async () => {
+        const tasks = await getScheduledBookings();
+        startScheduledPolling(
+          () => getScheduledBookings(),
+          async (tasks) => {
+            await saveScheduledBookings(tasks);
+            setScheduledTasks(tasks);
+          }
+        );
+      };
+      loadAndPoll();
+      return () => stopScheduledPolling();
     }, [])
   );
 

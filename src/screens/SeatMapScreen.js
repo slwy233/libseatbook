@@ -59,7 +59,7 @@ export default function SeatMapScreen({ route, navigation }) {
   };
 
   const handleSeatPress = async (seat) => {
-    if (seat.status !== 'FREE' && seat.status !== 'BOOKED') return;
+    if (seat.status !== 'FREE') return;
 
     setSelectedSeat(seat);
     setSelectedStart(null);
@@ -71,12 +71,13 @@ export default function SeatMapScreen({ route, navigation }) {
       const resp = await getStartTimes(seat.id, date);
       if (resp.status && resp.data) {
         setStartTimes(resp.data);
+        setBookingModal(true);
+      } else {
+        Alert.alert('提示', '该座位暂无可选时间段');
       }
     } catch (e) {
       Alert.alert('错误', '获取时间失败');
     }
-
-    setBookingModal(true);
   };
 
   const handleStartSelect = async (item) => {

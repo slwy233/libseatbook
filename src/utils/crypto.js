@@ -1,73 +1,78 @@
-import CryptoJS from 'react-native-crypto-js';
+import CryptoJS from 'crypto-js';
 
-// 从 getSysSet/PC 接口获取
-const DEFAULT_KEY = 'server_date_time';
-const DEFAULT_IV = 'client_date_time';
+export const DEFAULT_KEY = 'server_date_time';
+export const DEFAULT_IV = 'client_date_time';
 const HMAC_KEY = 'fkJlSwDn467GnoE4nWHNlg==';
 
 /**
- * AES-CBC 加密，与前端 E() 函数一致
+ * AES-CBC 加密
  */
 export function encrypt(text, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
   const key = CryptoJS.enc.Utf8.parse(keyStr);
   const iv = CryptoJS.enc.Utf8.parse(ivStr);
   const src = CryptoJS.enc.Utf8.parse(text);
-  const encrypted = CryptoJS.AES.encrypt(src, key, {
-    iv: iv,
-    mode: CryptoJS.mode.CBC,
-    padding: CryptoJS.pad.Pkcs7,
-  });
-  return encrypted.toString();
+  return CryptoJS.AES.encrypt(src, key, {
+    iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7,
+  }).toString();
 }
 
 /**
- * AES-CBC 解密，与前端 Q() 函数一致
+ * 解密 (预留)
  */
 export function decrypt(cipherText, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
   const key = CryptoJS.enc.Utf8.parse(keyStr);
   const iv = CryptoJS.enc.Utf8.parse(ivStr);
-  const decrypted = CryptoJS.AES.decrypt(cipherText, key, {
+  const result = CryptoJS.AES.decrypt(cipherText, key, {
+    iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7,
+  });
+  return CryptoJS.enc.Utf8.stringify(result).toString();
+}
+
+/**
+ * 生成 UUID v4 hex (36字符, 无横线, 与前端完全一致)
+ */
+function generateNonce() {
+  const chars = '0123456789abcdef';
+  const result = [];
+  for (let i = 0; i < 36; i++) {
+    result[i] = chars[Math.floor(Math.random() * 16)];
+  }
+  result[14] = '4';
+  result[19] = chars[Math.floor(Math.random() * 4)];
+  return result.join('');
+}
+
+/**
+ * 生成 HMAC 签名头
+ *
+ * 破解要点：
+ * 1. hmacKey是AES加密的，需要先用makePrefix/makeSuffix解密
+ * 2. 签名格式：seat::{requestId}::{timestamp}::{METHOD}（不包含body！）
+ * 3. HMAC-SHA256用解密后的真实key
+ */
+export function makeHmacHeaders(method, sysInfo) {
+  const requestId = generateNonce();
+  const requestDate = Date.now().toString();
+
+  // 1. AES解密hmacKey，得到真实的HMAC密钥
+  const iv = CryptoJS.enc.Utf8.parse(sysInfo.makeSuffix || DEFAULT_IV);
+  const key = CryptoJS.enc.Utf8.parse(sysInfo.makePrefix || DEFAULT_KEY);
+  const decrypted = CryptoJS.AES.decrypt(sysInfo.hmacKey, key, {
     iv: iv,
     mode: CryptoJS.mode.CBC,
-    padding: CryptoJS.pad.Pkcs7,
+    padding: CryptoJS.pad.Pkcs7
   });
-  return CryptoJS.enc.Utf8.stringify(decrypted).toString();
-}
+  const realHmacKey = decrypted.toString(CryptoJS.enc.Utf8);
 
-/**
- * 生成 HMAC 签名 (用于拦截器)
- */
-export function generateHmac(method, body, nonce, dateStr) {
-  const data = `${method}\n${body}\n${nonce}\n${dateStr}`;
-  const key = CryptoJS.enc.Base64.parse(HMAC_KEY);
-  const hmac = CryptoJS.HmacSHA256(data, key);
-  return CryptoJS.enc.Base64.stringify(hmac);
-}
+  // 2. 构造签名字符串（学校前端格式）
+  const signStr = `seat::${requestId}::${requestDate}::${method.toUpperCase()}`;
 
-/**
- * 生成 HMAC headers
- */
-export function makeHmacHeaders(method, data) {
-  const nonce = generateNonce();
-  const dateStr = new Date().toUTCString();
-  const body = data ? JSON.stringify(data) : '{}';
+  // 3. 用真实key计算HMAC
+  const hmac = CryptoJS.HmacSHA256(signStr, realHmacKey).toString();
+
   return {
-    nonce: nonce,
-    date: dateStr,
-    digest: generateHmac(method, body, nonce, dateStr),
+    'x-request-id': requestId,
+    'x-request-date': requestDate,
+    'x-hmac-request-key': hmac,
   };
-}
-
-function generateNonce() {
-  let result = '';
-  const chars = '0123456789abcdef';
-  for (let i = 0; i < 36; i++) {
-    result += chars[Math.floor(Math.random() * 16)];
-  }
-  // 设置 UUID v4 的第15位为 '4'
-  result = result.substring(0, 14) + '4' + result.substring(15);
-  // 设置第20位为 '8','9','a'或'b'
-  const nineteenth = '89ab'[Math.floor(Math.random() * 4)];
-  result = result.substring(0, 19) + nineteenth + result.substring(20);
-  return result;
 }

@@ -242,6 +242,7 @@ export default function SeatMapScreen({ route, navigation }) {
               </TouchableOpacity>
             </View>
 
+            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
             {selectedSeat && (
               <>
                 <View style={styles.modalSeatInfo}>
@@ -324,6 +325,7 @@ export default function SeatMapScreen({ route, navigation }) {
                 )}
               </>
             )}
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -513,6 +515,10 @@ const styles = StyleSheet.create({
   timeChipTextActive: {
     color: '#fff',
     fontWeight: '600',
+  },
+  modalScroll: {
+    flex: 1,
+    marginBottom: 8,
   },
   bookBtn: {
     backgroundColor: '#1677FF',

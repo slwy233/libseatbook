@@ -2,8 +2,8 @@
  * 验证码 OCR - 使用本地 ddddocr 服务
  */
 
-// 改成你电脑的局域网IP，手机和电脑连同一个WiFi
-const OCR_SERVER = 'http://192.168.1.100:8910';
+// 阿里云 ddddocr 服务器
+const OCR_SERVER = 'http://39.106.98.187:8910';
 
 /**
  * OCR识别: 发送图片到本地ddddocr服务

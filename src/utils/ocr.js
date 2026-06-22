@@ -80,7 +80,6 @@ export async function autoLoginWithCaptcha(
   onProgress = null
 ) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    // 1. 获取验证码
     if (onProgress) onProgress(attempt, 'fetching', `获取验证码 (第${attempt}次)...`);
     let captchaData;
     try {
@@ -90,7 +89,6 @@ export async function autoLoginWithCaptcha(
       continue;
     }
 
-    // 2. OCR
     if (onProgress) onProgress(attempt, 'ocr', 'OCR识别中...');
     let captchaText;
     try {
@@ -99,13 +97,13 @@ export async function autoLoginWithCaptcha(
       captchaText = '';
     }
 
+    // OCR失败就再试一次
     if (!captchaText || captchaText.length < 1) {
-      if (onProgress) onProgress(attempt, 'ocr_fail', '未能识别，重试...');
+      if (onProgress) onProgress(attempt, 'ocr_fail', '未识别，重试...');
       continue;
     }
 
-    // 3. 登录
-    if (onProgress) onProgress(attempt, 'login', `尝试登录 (${captchaText})...`);
+    if (onProgress) onProgress(attempt, 'login', `验证码: ${captchaText}，登录中...`);
     try {
       const result = await loginFn(captchaData.captchaId, captchaText);
       if (result && result.token) {

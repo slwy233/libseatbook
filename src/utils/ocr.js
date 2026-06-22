@@ -1,113 +1,39 @@
 /**
- * 验证码 OCR 识别
- * - 多引擎依次尝试
- * - 格式验证过滤误识别
- * - 5次重试自动登录
+ * 验证码 OCR - 使用本地 ddddocr 服务
  */
 
-const OCR_API = 'https://api.ocr.space/parse/image';
-const API_KEY = 'helloworld';
+// 改成你电脑的局域网IP，手机和电脑连同一个WiFi
+const OCR_SERVER = 'http://192.168.1.100:8910';
 
 /**
- * OCR 单次识别
+ * OCR识别: 发送图片到本地ddddocr服务
  */
-async function ocrImage(base64Image, engine = '2') {
-  const imageData = base64Image.startsWith('data:') ? base64Image : `data:image/png;base64,${base64Image}`;
-  const fd = new FormData();
-  fd.append('base64Image', imageData);
-  fd.append('language', 'eng');
-  fd.append('isOverlayRequired', 'false');
-  fd.append('OCREngine', engine);
-  fd.append('scale', 'true');
-  fd.append('detectOrientation', 'false');
-
+async function ocrImage(base64Image) {
   try {
-    const resp = await fetch(OCR_API, { method: 'POST', headers: { apikey: API_KEY }, body: fd });
+    const resp = await fetch(OCR_SERVER, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64Image }),
+    });
     const json = await resp.json();
-    if (json.OCRExitCode === 1 && json.ParsedResults?.length > 0) {
-      return (json.ParsedResults[0].ParsedText || '').trim();
-    }
-  } catch(e) {
-    console.log('[OCR] fetch error:', e.message);
-  }
-  return '';
-}
-
-function clean(raw) {
-  return raw.replace(/[\s\n\r]/g, '').replace(/[^a-zA-Z0-9+\-×*÷/=xX?]/g, '');
-}
-
-function isMath(text) {
-  return /[+\-×*÷/xX]/.test(text);
-}
-
-function solveMath(text) {
-  let expr = text.replace(/[=?\s]/g, '').replace(/×/g, '*').replace(/÷/g, '/').replace(/[xX]/g, '*');
-  const m = expr.match(/(-?\d+)\s*([+\-*/])\s*(\d+)/);
-  if (!m) return null;
-  const a = parseInt(m[1], 10), b = parseInt(m[3], 10);
-  switch (m[2]) {
-    case '+': return String(a + b);
-    case '-': return String(a - b);
-    case '*': return String(a * b);
-    case '/': return b !== 0 ? String(Math.floor(a / b)) : '0';
-    default: return null;
+    return json; // { raw, text, isMath, answer }
+  } catch (e) {
+    console.log('[OCR] 服务不可达:', e.message);
+    return null;
   }
 }
 
 /**
- * 验证结果是否合法
- */
-function valid(text) {
-  if (!text || text.length < 1) return false;
-  if (/^-?\d{1,3}$/.test(text)) return true;           // 算式结果
-  if (/^[a-zA-Z0-9]{3,4}$/.test(text)) return true;    // 3-4位验证码
-  return false;
-}
-
-/**
- * 智能识别: 多引擎 + 格式验证
+ * 识别验证码
  */
 export async function recognizeCaptcha(base64Image) {
-  const engines = ['2', '1', '3'];
-  const results = [];
-
-  for (const engine of engines) {
-    const raw = await ocrImage(base64Image, engine);
-    if (!raw) continue;
-    console.log(`[OCR E${engine}] "${raw}"`);
-
-    const c = clean(raw);
-
-    // 算式类型
-    if (isMath(c)) {
-      const ans = solveMath(c);
-      if (ans !== null && valid(ans)) {
-        console.log(`[OCR] ✓ 算式="${c}" → ${ans}`);
-        return ans;
-      }
-      results.push({ text: 'math:' + c, score: 1 });
-      continue;
-    }
-
-    // 字母数字类型
-    const alpha = c.replace(/[^a-zA-Z0-9]/g, '');
-    if (valid(alpha)) {
-      console.log(`[OCR] ✓ 验证码="${alpha}"`);
-      return alpha;
-    }
-    if (alpha.length >= 2) results.push({ text: alpha, score: alpha.length });
+  const result = await ocrImage(base64Image);
+  if (!result) return '';
+  if (result.text) return result.text;
+  // 降级: 有raw但没解析出来
+  if (result.raw && result.raw.length >= 2) {
+    return result.raw.replace(/[^a-zA-Z0-9\-]/g, '').substring(0, 6);
   }
-
-  // 降级: 返回最佳结果
-  results.sort((a, b) => b.score - a.score);
-  const best = results[0];
-  if (best) {
-    const t = best.text.startsWith('math:') ? best.text.substring(5) : best.text;
-    console.log(`[OCR] ⚠ 降级使用: "${t}"`);
-    return t.substring(0, 6);
-  }
-
   return '';
 }
 
@@ -126,11 +52,11 @@ export async function autoLoginWithCaptcha(
     try {
       captchaData = await getCaptchaFn();
     } catch (e) {
-      if (onProgress) onProgress(attempt, 'error', `获取失败`);
+      if (onProgress) onProgress(attempt, 'error', '获取验证码失败');
       continue;
     }
 
-    if (onProgress) onProgress(attempt, 'ocr', 'OCR识别中...');
+    if (onProgress) onProgress(attempt, 'ocr', 'ddddocr识别中...');
     let captchaText;
     try {
       captchaText = await recognizeCaptcha(captchaData.captchaImage);

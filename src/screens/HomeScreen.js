@@ -1,29 +1,46 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getCurrentMake, cancelBooking } from '../api/client';
-import { getUserInfo, removeToken, getToken } from '../utils/storage';
+import { getUserInfo, removeToken } from '../utils/storage';
+import { getSchedules } from '../api/scheduleApi';
 
 export default function HomeScreen({ navigation }) {
   const [userInfo, setUserInfo] = useState(null);
   const [currentBooking, setCurrentBooking] = useState(null);
+  const [scheduleSummary, setScheduleSummary] = useState(null);
 
   useFocusEffect(useCallback(() => { loadData(); }, []));
 
   const loadData = async () => {
-    // 用户信息从登录时保存的AsyncStorage读取
     const info = await getUserInfo();
     if (info) setUserInfo(info);
 
-    // 尝试加载当前预约 — HMAC已破解！
     try {
       const resp = await getCurrentMake();
       if (resp.status && resp.data && resp.data.id) {
         setCurrentBooking(resp.data);
+      } else {
+        setCurrentBooking(null);
       }
-    } catch (e) {
-      console.log('获取当前预约失败:', e.message);
-    }
+    } catch (e) {}
+
+    // 拉取定时任务结果摘要
+    try {
+      const sResp = await getSchedules();
+      if (sResp.status && sResp.data) {
+        const today = new Date().toISOString().slice(0, 10);
+        const latest = sResp.data
+          .filter(t => t.enabled)
+          .flatMap(t => {
+            const r = t.results || {};
+            return Object.entries(r).map(([d, v]) => ({ date: d, result: v, buildingName: t.buildingName, roomName: t.roomName }));
+          })
+          .filter(e => e.date === today && e.result)
+          .slice(-3);
+        setScheduleSummary(latest.length > 0 ? latest : null);
+      }
+    } catch (e) {}
   };
 
   const handleLogout = () => {
@@ -62,10 +79,23 @@ export default function HomeScreen({ navigation }) {
       </View>
 
       {/* 当前预约 */}
-      <View style={styles.body}>
+      <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
         {currentBooking ? (
           <View style={styles.bookingCard}>
-            <Text style={styles.bookingStatus}>🔵 已预约</Text>
+            <View style={styles.bookingHeader}>
+              <Text style={styles.bookingStatus}>🔵 已预约</Text>
+              <TouchableOpacity onPress={() => {
+                Alert.alert('取消预约', '确定要取消吗？', [
+                  { text: '再想想', style: 'cancel' },
+                  { text: '确定取消', style: 'destructive', onPress: async () => {
+                    try { await cancelBooking(currentBooking.id); loadData(); }
+                    catch (e) { Alert.alert('错误', e.message); }
+                  }},
+                ]);
+              }}>
+                <Text style={styles.cancelText}>取消</Text>
+              </TouchableOpacity>
+            </View>
             <Text style={styles.bookingDetail}>
               {currentBooking.seatLabel}号 · {currentBooking.buildName}{' '}
               {currentBooking.floorName} {currentBooking.roomName}
@@ -81,13 +111,35 @@ export default function HomeScreen({ navigation }) {
           </View>
         )}
 
+        {/* 定时预约结果摘要 */}
+        {scheduleSummary && (
+          <View style={styles.scheduleCard}>
+            <Text style={styles.scheduleCardTitle}>🤖 今日定时预约</Text>
+            {scheduleSummary.map((e, i) => (
+              <Text key={i} style={[styles.scheduleItem, {
+                color: e.result.startsWith('✅') ? '#52c41a' : e.result.startsWith('❌') ? '#ff4d4f' : e.result.startsWith('⚠️') ? '#faad14' : '#666'
+              }]}>· {e.result}</Text>
+            ))}
+          </View>
+        )}
+
         {/* 快捷入口 */}
         <Text style={styles.sectionTitle}>快捷操作</Text>
+
         <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Book')}>
           <Text style={styles.actionIcon}>🪑</Text>
           <View style={styles.actionInfo}>
             <Text style={styles.actionTitle}>预约选座</Text>
             <Text style={styles.actionDesc}>查看空闲座位并预约</Text>
+          </View>
+          <Text style={styles.actionArrow}>›</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Schedule')}>
+          <Text style={styles.actionIcon}>⏰</Text>
+          <View style={styles.actionInfo}>
+            <Text style={styles.actionTitle}>定时预约</Text>
+            <Text style={styles.actionDesc}>设置自动预约任务 · 服务器每日执行</Text>
           </View>
           <Text style={styles.actionArrow}>›</Text>
         </TouchableOpacity>
@@ -101,8 +153,8 @@ export default function HomeScreen({ navigation }) {
           <Text style={styles.actionArrow}>›</Text>
         </TouchableOpacity>
 
-        <Text style={styles.tip}>💡 预约选座和我的预约使用学校官方页面</Text>
-      </View>
+        <View style={{ height: 30 }} />
+      </ScrollView>
     </View>
   );
 }
@@ -126,13 +178,19 @@ const styles = StyleSheet.create({
   body: { flex: 1, padding: 16 },
 
   bookingCard: { backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#1677FF' },
-  bookingStatus: { fontSize: 15, fontWeight: '600', color: '#333', marginBottom: 8 },
+  bookingHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  bookingStatus: { fontSize: 15, fontWeight: '600', color: '#333' },
+  cancelText: { color: '#ff4d4f', fontSize: 14, fontWeight: '600' },
   bookingDetail: { fontSize: 14, color: '#333', marginBottom: 4 },
   bookingTime: { fontSize: 13, color: '#888' },
 
   noBooking: { backgroundColor: '#fff', borderRadius: 14, padding: 24, alignItems: 'center', marginBottom: 16 },
   noBookingIcon: { fontSize: 40, marginBottom: 6 },
   noBookingText: { fontSize: 15, color: '#999' },
+
+  scheduleCard: { backgroundColor: '#fefce8', borderRadius: 12, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: '#fde68a' },
+  scheduleCardTitle: { fontSize: 14, fontWeight: '600', color: '#854d0e', marginBottom: 6 },
+  scheduleItem: { fontSize: 13, lineHeight: 20 },
 
   sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 10 },
 

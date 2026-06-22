@@ -13,6 +13,7 @@ import BuildingListScreen from './src/screens/BuildingListScreen';
 import RoomListScreen from './src/screens/RoomListScreen';
 import SeatMapScreen from './src/screens/SeatMapScreen';
 import MyReservationsScreen from './src/screens/MyReservationsScreen';
+import ScheduleScreen from './src/screens/ScheduleScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -101,6 +102,7 @@ export default function App() {
         <Stack.Screen name="Main" component={MainTabs} />
         <Stack.Screen name="RoomList" component={RoomListScreen} />
         <Stack.Screen name="SeatMap" component={SeatMapScreen} />
+        <Stack.Screen name="Schedule" component={ScheduleScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );

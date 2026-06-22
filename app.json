@@ -23,6 +23,7 @@
       },
       "package": "com.seatbooker.app",
       "versionCode": 1,
+      "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",
         "POST_NOTIFICATIONS",

@@ -59,7 +59,11 @@ function isTokenExpiredResponse(json, response) {
 
 async function post(path, data = {}, needAuth = true, allowRetryAfterRelogin = true) {
   const url = `${BASE_URL}${path}`;
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = {
+    'Content-Type': 'application/json',
+    logintype: 'PC',
+    loginType: 'PC',
+  };
 
   if (needAuth) {
     const token = await getToken();
@@ -108,6 +112,8 @@ export async function getCaptcha(username) {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', `${BASE_URL}/static/public/cg/generateCaptcha/${username}`, true);
     xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.setRequestHeader('logintype', 'PC');
+    xhr.setRequestHeader('loginType', 'PC');
     xhr.timeout = 10000;
     xhr.onreadystatechange = () => {
       if (xhr.readyState !== 4) {
@@ -151,7 +157,6 @@ export async function login(username, password, captchaId, captchaText) {
       captchaId: captchaId || '',
       captchaText: captchaText || '-1',
     },
-    loginType: 'PC',
   }, false);
 
   if (json.status && json.data) {

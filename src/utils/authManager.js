@@ -18,13 +18,17 @@ export function onTokenExpired(callback) { _onExpired = callback; }
  */
 export function forceLogout(needManual = false) {
   clearAll().then(() => {
-    if (_onExpired) _onExpired(needManual);
-    if (_globalNavRef) {
+    // 先导航，再弹窗
+    if (_globalNavRef && _globalNavRef.isReady()) {
       _globalNavRef.reset({
         index: 0,
         routes: [{ name: 'Login', params: { forceReLogin: needManual } }],
       });
     }
+    // 延迟弹窗，确保导航完成
+    setTimeout(() => {
+      if (_onExpired) _onExpired(needManual);
+    }, 500);
   });
 }
 
@@ -37,7 +41,7 @@ export async function isLoggedIn() {
 }
 
 /**
- * 自动重登录 — 8次OCR重试
+ * 自动重登录 — 10次OCR重试
  * 成功：返回true，token已更新
  * 失败：返回false，需清理状态
  */
@@ -50,7 +54,7 @@ export async function autoReLogin() {
   const result = await autoLoginWithCaptcha(
     async () => await getCaptcha(creds.username),
     async (cid, ctext) => await login(creds.username, creds.password, cid, ctext),
-    8, // 8次重试
+    10, // 10次OCR重试
     null  // 静默，不显示进度
   );
 
@@ -79,17 +83,13 @@ export async function handleTokenExpired() {
         return { success: true };
       }
 
-      // 自动重登失败 — 清除状态，回调
+      // 自动重登失败 — 强制退出
       await clearAll();
-
-      if (_onExpired) {
-        _onExpired(result.needManual);
-      }
-
+      forceLogout(result.needManual);
       return { success: false, needManual: result.needManual, message: result.message };
     } catch (e) {
       await clearAll();
-      if (_onExpired) _onExpired(true);
+      forceLogout(true);
       return { success: false, needManual: true, message: e.message };
     } finally {
       _reloginPromise = null;

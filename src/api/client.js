@@ -71,23 +71,26 @@ async function post(path, data = {}, needAuth = true) {
 
   // 处理 token 过期 (code 20003) — 自动重登并重试一次
   if (json.code === '20003' && needAuth) {
+    const { handleTokenExpired, forceLogout } = require('../utils/authManager');
     const reloginResult = await handleTokenExpired();
     if (reloginResult.success) {
-      // 重登成功 — 更新token后重试本次请求
+      // 重登成功 — 更新token+签名，重试请求
       const newToken = await getToken();
       if (newToken) headers['token'] = newToken;
-      // 重新签名
       const sysInfo2 = await ensureSystemInfo();
       if (sysInfo2 && sysInfo2.hmac === 1) {
+        ['x-request-id', 'x-request-date', 'x-hmac-request-key'].forEach(k => delete headers[k]);
         Object.assign(headers, makeHmacHeaders('POST', sysInfo2));
       }
       const retryResp = await fetch(url, { method: 'POST', headers, body });
       const retryJson = await retryResp.json();
       if (retryJson.code === '20003' || retryJson.status === false) {
+        forceLogout(true);
         throw new Error('TOKEN_EXPIRED');
       }
       return retryJson;
     }
+    // 重登失败也已经由handleTokenExpired内部调用_onExpired处理了
     throw new Error('TOKEN_EXPIRED');
   }
 

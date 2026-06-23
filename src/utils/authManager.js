@@ -6,13 +6,26 @@ import { login, getCaptcha } from '../api/client';
 import { autoLoginWithCaptcha } from './ocr';
 import { getCredentials, getToken, saveToken, removeToken, clearAll } from './storage';
 
-let _onExpired = null; // 过期回调 — 导航回Login页
+let _onExpired = null;
+let _globalNavRef = null;
+
+export function setGlobalNavRef(ref) { _globalNavRef = ref; }
+
+export function onTokenExpired(callback) { _onExpired = callback; }
 
 /**
- * 设置登录过期回调
+ * 强制退出：清状态 + 导航到登录
  */
-export function onTokenExpired(callback) {
-  _onExpired = callback;
+export function forceLogout(needManual = false) {
+  clearAll().then(() => {
+    if (_onExpired) _onExpired(needManual);
+    if (_globalNavRef) {
+      _globalNavRef.reset({
+        index: 0,
+        routes: [{ name: 'Login', params: { forceReLogin: needManual } }],
+      });
+    }
+  });
 }
 
 /**

@@ -5,7 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Text, View, ActivityIndicator, Alert } from 'react-native';
 import { getToken } from './src/utils/storage';
-import { onTokenExpired } from './src/utils/authManager';
+import { onTokenExpired, setGlobalNavRef } from './src/utils/authManager';
 
 import LoginScreen from './src/screens/LoginScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -49,27 +49,18 @@ export default function App() {
   const navigationRef = useRef(null);
 
   useEffect(() => {
-    // 设置token过期回调
+    // 把nav ref注册到authManager，token过期时直接reset
+    setGlobalNavRef(navigationRef.current);
+
+    // 设置token过期回调——弹窗提示
     onTokenExpired((needManual) => {
-      setTimeout(() => {
-        if (navigationRef.current) {
-          Alert.alert(
-            '登录已过期',
-            needManual
-              ? '自动重登失败，请手动输入验证码重新登录'
-              : '登录状态已过期，请重新登录',
-            [{
-              text: '重新登录',
-              onPress: () => {
-                navigationRef.current.reset({
-                  index: 0,
-                  routes: [{ name: 'Login', params: { forceReLogin: true } }],
-                });
-              },
-            }]
-          );
-        }
-      }, 300);
+      Alert.alert(
+        '登录已过期',
+        needManual
+          ? '自动重登失败，请手动输入验证码重新登录'
+          : '登录状态已过期，请重新登录',
+        [{ text: '重新登录', style: 'destructive' }]
+      );
     });
   }, []);
 
@@ -95,7 +86,10 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer
+      ref={navigationRef}
+      onReady={() => setGlobalNavRef(navigationRef.current)}
+    >
       <StatusBar style="light" />
       <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Login" component={LoginScreen} />

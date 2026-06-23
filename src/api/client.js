@@ -38,12 +38,11 @@ async function fetchSysInfo() {
     return json.data;
   }
 
-  throw new Error(json.message || '获取系统配置失败');
+  throw new Error(json.message || 'Fetch system config failed');
 }
 
 function isTokenExpiredResponse(json, response) {
   const code = String(json?.code ?? '').trim();
-  const message = String(json?.message ?? json?.msg ?? '').trim();
 
   if (code === '20003') {
     return true;
@@ -53,8 +52,7 @@ function isTokenExpiredResponse(json, response) {
     return true;
   }
 
-  return /token|登录状态|重新登录|未登录|过期/i.test(message)
-    && /登录|token|过期|失效/i.test(message);
+  return false;
 }
 
 async function post(path, data = {}, needAuth = true, allowRetryAfterRelogin = true) {
@@ -96,12 +94,8 @@ async function post(path, data = {}, needAuth = true, allowRetryAfterRelogin = t
     throw new Error('TOKEN_EXPIRED');
   }
 
-  if (isTokenExpiredResponse(json, response)) {
+  if (needAuth && isTokenExpiredResponse(json, response)) {
     throw new Error('TOKEN_EXPIRED');
-  }
-
-  if (json.status === false) {
-    throw new Error(json.message || '请求失败');
   }
 
   return json;
@@ -121,7 +115,7 @@ export async function getCaptcha(username) {
       }
 
       if (xhr.status !== 200) {
-        reject(new Error(`请求失败 HTTP ${xhr.status}`));
+        reject(new Error(`Request failed HTTP ${xhr.status}`));
         return;
       }
 
@@ -135,13 +129,13 @@ export async function getCaptcha(username) {
           return;
         }
 
-        reject(new Error(json.message || '获取验证码失败'));
+        reject(new Error(json.message || 'Get captcha failed'));
       } catch (error) {
-        reject(new Error('解析验证码响应失败'));
+        reject(new Error('Parse captcha response failed'));
       }
     };
-    xhr.onerror = () => reject(new Error('网络连接失败'));
-    xhr.ontimeout = () => reject(new Error('请求超时'));
+    xhr.onerror = () => reject(new Error('Network connection failed'));
+    xhr.ontimeout = () => reject(new Error('Request timeout'));
     xhr.send('{}');
   });
 }
@@ -157,6 +151,7 @@ export async function login(username, password, captchaId, captchaText) {
       captchaId: captchaId || '',
       captchaText: captchaText || '-1',
     },
+    loginType: 'PC',
   }, false);
 
   if (json.status && json.data) {
@@ -167,7 +162,7 @@ export async function login(username, password, captchaId, captchaText) {
     };
   }
 
-  throw new Error(json.message || '登录失败');
+  throw new Error(json.message || 'Login failed');
 }
 
 export async function getUserInfo() {

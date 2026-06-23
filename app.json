@@ -2,7 +2,7 @@
   "expo": {
     "name": "座位预约",
     "slug": "seat-booker",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
     "splash": {
@@ -15,14 +15,14 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.seatbooker.app",
-      "buildNumber": "3"
+      "buildNumber": "4"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#1677FF"
       },
       "package": "com.seatbooker.app",
-      "versionCode": 3,
+      "versionCode": 4,
       "permissions": [
         "INTERNET",
         "NOTIFICATIONS",

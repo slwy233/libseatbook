@@ -19,6 +19,7 @@ import {
   getEndTimes,
   bookSeat,
 } from '../api/client';
+import { isTokenExpiredError } from '../utils/authManager';
 import {
   saveScheduledBookings,
   getScheduledBookings,

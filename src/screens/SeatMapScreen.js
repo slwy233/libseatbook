@@ -15,6 +15,7 @@ import {
   getEndTimes,
   bookSeat,
 } from '../api/client';
+import { isTokenExpiredError } from '../utils/authManager';
 import { minutesToTimeStr, formatDate } from '../utils/time';
 
 export default function SeatMapScreen({ route, navigation }) {
@@ -46,10 +47,7 @@ export default function SeatMapScreen({ route, navigation }) {
         setSeats(resp.data);
       }
     } catch (e) {
-      if (e.message === 'TOKEN_EXPIRED') {
-        Alert.alert('登录过期', '请重新登录', [
-          { text: '确定', onPress: () => navigation.replace('Login') },
-        ]);
+      if (isTokenExpiredError(e)) {
         return;
       }
       Alert.alert('错误', e.message);

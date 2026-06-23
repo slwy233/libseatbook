@@ -11,7 +11,8 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getCurrentMake, getBuildingFloorDate, cancelBooking } from '../api/client';
-import { getUserInfo } from '../utils/storage';
+import { clearSession, getUserInfo } from '../utils/storage';
+import { isTokenExpiredError } from '../utils/authManager';
 import { minutesToTimeStr, todayDateStr } from '../utils/time';
 
 export default function HomeScreen({ navigation }) {
@@ -47,10 +48,7 @@ export default function HomeScreen({ navigation }) {
         setBuildings(buildingResp.data.buildings || []);
       }
     } catch (e) {
-      if (e.message === 'TOKEN_EXPIRED') {
-        Alert.alert('登录过期', '请重新登录', [
-          { text: '确定', onPress: () => navigation.replace('Login') },
-        ]);
+      if (isTokenExpiredError(e)) {
         return;
       }
       console.log('加载数据失败:', e.message);
@@ -96,7 +94,13 @@ export default function HomeScreen({ navigation }) {
       {
         text: '退出',
         style: 'destructive',
-        onPress: () => navigation.replace('Login'),
+        onPress: async () => {
+          await clearSession();
+          navigation.reset({
+            index: 0,
+            routes: [{ name: 'Login' }],
+          });
+        },
       },
     ]);
   };

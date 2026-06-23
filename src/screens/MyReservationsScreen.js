@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { getCurrentMake, getLastMake, cancelBooking } from '../api/client';
+import { isTokenExpiredError } from '../utils/authManager';
 
 export default function MyReservationsScreen({ navigation }) {
   const [current, setCurrent] = useState(null);
@@ -41,10 +42,7 @@ export default function MyReservationsScreen({ navigation }) {
         setHistory(historyResp.data);
       }
     } catch (e) {
-      if (e.message === 'TOKEN_EXPIRED') {
-        Alert.alert('登录过期', '请重新登录', [
-          { text: '确定', onPress: () => navigation.replace('Login') },
-        ]);
+      if (isTokenExpiredError(e)) {
         return;
       }
       console.log('加载预约数据失败:', e.message);
@@ -74,6 +72,9 @@ export default function MyReservationsScreen({ navigation }) {
               Alert.alert('失败', resp.message || '取消失败');
             }
           } catch (e) {
+      if (isTokenExpiredError(e)) {
+        return;
+      }
             Alert.alert('错误', e.message);
           } finally {
             setCancelingId(null);

@@ -1,12 +1,12 @@
-import CryptoJS from 'react-native-crypto-js';
+import CryptoJS from 'crypto-js';
 
-// 从 getSysSet/PC 接口获取
+// 浠?getSysSet/PC 鎺ュ彛鑾峰彇
 const DEFAULT_KEY = 'server_date_time';
 const DEFAULT_IV = 'client_date_time';
 const HMAC_KEY = 'fkJlSwDn467GnoE4nWHNlg==';
 
 /**
- * AES-CBC 加密，与前端 E() 函数一致
+ * AES-CBC 鍔犲瘑锛屼笌鍓嶇 E() 鍑芥暟涓€鑷?
  */
 export function encrypt(text, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
   const key = CryptoJS.enc.Utf8.parse(keyStr);
@@ -21,7 +21,7 @@ export function encrypt(text, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
 }
 
 /**
- * AES-CBC 解密，与前端 Q() 函数一致
+ * AES-CBC 瑙ｅ瘑锛屼笌鍓嶇 Q() 鍑芥暟涓€鑷?
  */
 export function decrypt(cipherText, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
   const key = CryptoJS.enc.Utf8.parse(keyStr);
@@ -35,7 +35,7 @@ export function decrypt(cipherText, keyStr = DEFAULT_KEY, ivStr = DEFAULT_IV) {
 }
 
 /**
- * 生成 HMAC 签名 (用于拦截器)
+ * 鐢熸垚 HMAC 绛惧悕 (鐢ㄤ簬鎷︽埅鍣?
  */
 export function generateHmac(method, body, nonce, dateStr) {
   const data = `${method}\n${body}\n${nonce}\n${dateStr}`;
@@ -45,7 +45,7 @@ export function generateHmac(method, body, nonce, dateStr) {
 }
 
 /**
- * 生成 HMAC headers
+ * 鐢熸垚 HMAC headers
  */
 export function makeHmacHeaders(method, data) {
   const nonce = generateNonce();
@@ -64,10 +64,11 @@ function generateNonce() {
   for (let i = 0; i < 36; i++) {
     result += chars[Math.floor(Math.random() * 16)];
   }
-  // 设置 UUID v4 的第15位为 '4'
+  // 璁剧疆 UUID v4 鐨勭15浣嶄负 '4'
   result = result.substring(0, 14) + '4' + result.substring(15);
-  // 设置第20位为 '8','9','a'或'b'
+  // 璁剧疆绗?0浣嶄负 '8','9','a'鎴?b'
   const nineteenth = '89ab'[Math.floor(Math.random() * 4)];
   result = result.substring(0, 19) + nineteenth + result.substring(20);
   return result;
 }
+

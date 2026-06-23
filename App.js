@@ -1,10 +1,21 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Text, View, ActivityIndicator } from 'react-native';
-import { getToken } from './src/utils/storage';
+import { Alert, Text, View, ActivityIndicator } from 'react-native';
+import {
+  getToken,
+  getCredentials,
+  saveToken,
+  saveUserInfo,
+} from './src/utils/storage';
+import { getCaptcha, login } from './src/api/client';
+import { autoLoginWithCaptcha } from './src/utils/ocr';
+import {
+  onTokenExpired,
+  registerAutoReLoginHandler,
+} from './src/utils/authManager';
 
 import LoginScreen from './src/screens/LoginScreen';
 import HomeScreen from './src/screens/HomeScreen';
@@ -15,8 +26,8 @@ import ScheduledScreen from './src/screens/ScheduledScreen';
 
 const Stack = createNativeStackNavigator();
 const Tab = createBottomTabNavigator();
+const BACKGROUND_RELOGIN_RETRIES = 8;
 
-// Tab 图标 (纯文字 fallback)
 function TabIcon({ emoji, focused }) {
   return (
     <Text style={{ fontSize: focused ? 24 : 20, opacity: focused ? 1 : 0.5 }}>
@@ -66,7 +77,7 @@ function MainTabs() {
         component={MyReservationsScreen}
         options={{
           tabBarLabel: '我的预约',
-          tabBarIcon: ({ focused }) => <TabIcon emoji="📋" focused={focused} />,
+          tabBarIcon: ({ focused }) => <TabIcon emoji="📝" focused={focused} />,
         }}
       />
     </Tab.Navigator>
@@ -76,20 +87,77 @@ function MainTabs() {
 export default function App() {
   const [initialRoute, setInitialRoute] = useState(null);
   const [loading, setLoading] = useState(true);
+  const navigationRef = useRef(null);
+  const expiredAlertVisibleRef = useRef(false);
 
   useEffect(() => {
     checkLogin();
   }, []);
 
+  useEffect(() => {
+    registerAutoReLoginHandler(async () => {
+      const credentials = await getCredentials();
+      if (!credentials.username || !credentials.password) {
+        return {
+          success: false,
+          needManual: true,
+          message: '未找到已保存的账号密码',
+        };
+      }
+
+      const result = await autoLoginWithCaptcha(
+        async () => await getCaptcha(credentials.username),
+        async (captchaId, captchaText) => await login(
+          credentials.username,
+          credentials.password,
+          captchaId,
+          captchaText
+        ),
+        BACKGROUND_RELOGIN_RETRIES
+      );
+
+      if (result.success && result.result?.token) {
+        await saveToken(result.result.token);
+        if (result.result.userInfo) {
+          await saveUserInfo(result.result.userInfo);
+        }
+      }
+
+      return result;
+    });
+
+    onTokenExpired(({ needManual, message }) => {
+      if (expiredAlertVisibleRef.current) {
+        return;
+      }
+
+      expiredAlertVisibleRef.current = true;
+
+      Alert.alert(
+        '登录已过期',
+        needManual
+          ? (message || '自动重登失败，请手动输入验证码重新登录')
+          : (message || '登录状态已过期，请重新登录'),
+        [{
+          text: '重新登录',
+          onPress: () => {
+            expiredAlertVisibleRef.current = false;
+            navigationRef.current?.reset({
+              index: 0,
+              routes: [{ name: 'Login', params: { forceReLogin: true } }],
+            });
+          },
+        }],
+        { cancelable: false }
+      );
+    });
+  }, []);
+
   const checkLogin = async () => {
     try {
       const token = await getToken();
-      if (token) {
-        setInitialRoute('Main');
-      } else {
-        setInitialRoute('Login');
-      }
-    } catch (e) {
+      setInitialRoute(token ? 'Main' : 'Login');
+    } catch (error) {
       setInitialRoute('Login');
     } finally {
       setLoading(false);
@@ -106,12 +174,9 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <StatusBar style="light" />
-      <Stack.Navigator
-        initialRouteName={initialRoute}
-        screenOptions={{ headerShown: false }}
-      >
+      <Stack.Navigator initialRouteName={initialRoute} screenOptions={{ headerShown: false }}>
         <Stack.Screen name="Login" component={LoginScreen} />
         <Stack.Screen name="Main" component={MainTabs} />
         <Stack.Screen

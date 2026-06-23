@@ -21,6 +21,13 @@ export async function removeToken() {
   await AsyncStorage.removeItem(KEYS.TOKEN);
 }
 
+export async function clearSession() {
+  await AsyncStorage.multiRemove([
+    KEYS.TOKEN,
+    KEYS.USER_INFO,
+  ]);
+}
+
 export async function saveUserInfo(info) {
   await AsyncStorage.setItem(KEYS.USER_INFO, JSON.stringify(info));
 }

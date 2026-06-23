@@ -1,11 +1,13 @@
 {
   "expo": {
-    "name": "座位预约",
+    "name": "天商书座",
     "slug": "seat-booker",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon_v1_blue.png",
     "userInterfaceStyle": "light",
     "splash": {
+      "image": "./assets/icon_v1_blue.png",
       "backgroundColor": "#1677FF",
       "resizeMode": "contain"
     },
@@ -19,10 +21,11 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/icon_v1_blue.png",
         "backgroundColor": "#1677FF"
       },
       "package": "com.seatbooker.app",
-      "versionCode": 1,
+      "versionCode": 5,
       "usesCleartextTraffic": true,
       "permissions": [
         "INTERNET",

@@ -55,10 +55,6 @@ SeatBooker/
 - Android SDK (API 34+)
 - Expo CLI
 
-### OCR 服务（已在阿里云部署）
-- 服务器: `39.106.98.187:8910`
-- 基于 [ddddocr](https://github.com/sml2h3/ddddocr)
-
 ## 快速开始
 
 ```bash

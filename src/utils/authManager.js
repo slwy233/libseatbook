@@ -1,100 +1,87 @@
-/**
- * 登录状态管理器
- * 监听token过期，自动重登录
- */
+/** Session expiry recovery, shared by concurrent API calls. */
 import { login, getCaptcha } from '../api/client';
 import { autoLoginWithCaptcha } from './ocr';
-import { getCredentials, getToken, saveToken, removeToken, clearAll } from './storage';
+import { getCredentials, getToken, saveToken, clearSession, getSessionVersion, isSessionCurrent } from './storage';
 
-let _onExpired = null;
-let _globalNavRef = null;
+const listeners = new Set();
+let globalNavRef = null;
+let reloginFlight = null;
 
-export function setGlobalNavRef(ref) { _globalNavRef = ref; }
-
-export function onTokenExpired(callback) { _onExpired = callback; }
-
-/**
- * 强制退出：清状态 + 导航到登录
- */
-export function forceLogout(needManual = false) {
-  clearAll().then(() => {
-    // 先导航，再弹窗
-    if (_globalNavRef && _globalNavRef.isReady()) {
-      _globalNavRef.reset({
-        index: 0,
-        routes: [{ name: 'Login', params: { forceReLogin: needManual } }],
-      });
-    }
-    // 延迟弹窗，确保导航完成
-    setTimeout(() => {
-      if (_onExpired) _onExpired(needManual);
-    }, 500);
-  });
+export function setGlobalNavRef(ref) { globalNavRef = ref; }
+export function onTokenExpired(callback) {
+  listeners.add(callback);
+  return () => listeners.delete(callback);
 }
 
-/**
- * 检查token是否存在
- */
-export async function isLoggedIn() {
-  const token = await getToken();
-  return !!token;
+export async function forceLogout(needManual = false, options = {}) {
+  const { notify = true, forgetCredentials = false, expectedVersion, expectedToken } = options;
+  if (expectedVersion !== undefined && !isSessionCurrent(expectedVersion)) return false;
+  if (expectedToken !== undefined && await getToken() !== expectedToken) return false;
+  // clearSession changes the generation immediately, before awaiting storage writes.
+  const clearing = clearSession({ forgetCredentials, expectedVersion });
+  const clearedVersion = getSessionVersion();
+  const cleared = await clearing;
+  if (!cleared || !isSessionCurrent(clearedVersion)) return false;
+  if (notify) {
+    listeners.forEach(callback => {
+      try { callback(needManual); } catch (_) { /* one subscriber must not prevent root navigation */ }
+    });
+  }
+  if (!isSessionCurrent(clearedVersion)) return false;
+  const navigation = globalNavRef?.current || globalNavRef;
+  if (navigation && (!navigation.isReady || navigation.isReady())) {
+    const state = { index: 0, routes: [{ name: 'Login', params: { forceReLogin: needManual } }] };
+    if (navigation.resetRoot) navigation.resetRoot(state);
+    else if (navigation.reset) navigation.reset(state);
+  }
+  return true;
 }
 
-/**
- * 自动重登录 — 10次OCR重试
- * 成功：返回true，token已更新
- * 失败：返回false，需清理状态
- */
-export async function autoReLogin() {
+export async function isLoggedIn() { return !!(await getToken()); }
+
+export async function autoReLogin(version = getSessionVersion()) {
   const creds = await getCredentials();
-  if (!creds.username || !creds.password) {
+  if (!isSessionCurrent(version)) return { success: false, cancelled: true };
+  if (!creds?.username || !creds?.password) {
     return { success: false, needManual: true, message: '未找到已保存的账号' };
   }
-
   const result = await autoLoginWithCaptcha(
-    async () => await getCaptcha(creds.username),
-    async (cid, ctext) => await login(creds.username, creds.password, cid, ctext),
-    10, // 10次OCR重试
-    null  // 静默，不显示进度
+    () => getCaptcha(creds.username),
+    async (cid, ctext) => {
+      if (!isSessionCurrent(version)) throw new Error('SESSION_CHANGED');
+      return login(creds.username, creds.password, cid, ctext, { persistToken: false });
+    },
+    5,
+    null,
+    { deadlineMs: 25000, shouldContinue: () => isSessionCurrent(version) }
   );
-
-  if (result.success && result.result) {
-    await saveToken(result.result.token);
-    return { success: true };
+  if (!isSessionCurrent(version)) return { success: false, cancelled: true };
+  if (result.success && result.result?.token) {
+    const saved = await saveToken(result.result.token, { refresh: true, expectedVersion: version });
+    return saved ? { success: true } : { success: false, cancelled: true };
   }
-
   return result;
 }
 
-/**
- * token过期时自动重登
- * 外部API调用检测到TOKEN_EXPIRED时调用此函数
- */
-let _reloginPromise = null; // 防止并发重登
-
-export async function handleTokenExpired() {
-  // 防止并发
-  if (_reloginPromise) return _reloginPromise;
-
-  _reloginPromise = (async () => {
-    try {
-      const result = await autoReLogin();
-      if (result.success) {
-        return { success: true };
-      }
-
-      // 自动重登失败 — 强制退出
-      await clearAll();
-      forceLogout(result.needManual);
-      return { success: false, needManual: result.needManual, message: result.message };
-    } catch (e) {
-      await clearAll();
-      forceLogout(true);
-      return { success: false, needManual: true, message: e.message };
-    } finally {
-      _reloginPromise = null;
-    }
-  })();
-
-  return _reloginPromise;
+export async function handleTokenExpired(expiredToken, version = getSessionVersion()) {
+  if (!isSessionCurrent(version)) return { success: false, cancelled: true };
+  const currentToken = await getToken();
+  if (!isSessionCurrent(version)) return { success: false, cancelled: true };
+  // A late response from the old token should reuse the token already refreshed.
+  if (expiredToken && currentToken && currentToken !== expiredToken) return { success: true };
+  if (reloginFlight?.version === version) return reloginFlight.promise;
+  const flight = { version };
+  flight.promise = (async () => {
+    let result;
+    try { result = await autoReLogin(version); }
+    catch (error) { result = { success: false, needManual: true, message: error.message }; }
+    if (!isSessionCurrent(version) || result.cancelled) return { success: false, cancelled: true };
+    if (result.success) return { success: true };
+    await forceLogout(true, { expectedVersion: version });
+    return { ...result, needManual: true };
+  })().finally(() => {
+    if (reloginFlight === flight) reloginFlight = null;
+  });
+  reloginFlight = flight;
+  return flight.promise;
 }

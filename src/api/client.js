@@ -1,116 +1,90 @@
 import { Platform } from 'react-native';
 import { encrypt, makeHmacHeaders } from '../utils/crypto';
-import { getToken, saveToken, getSystemInfo, saveSystemInfo } from '../utils/storage';
-import { handleTokenExpired } from '../utils/authManager';
+import { getToken, saveToken, getSystemInfo, saveSystemInfo, getSessionVersion, isSessionCurrent } from '../utils/storage';
+import { handleTokenExpired, forceLogout } from '../utils/authManager';
+import { requestJSON, apiError, assertBusinessSuccess } from './http';
 
-// 移动端直连；Web端通过本地代理绕过浏览器CORS
-// Web: 需要先在终端运行 npx local-cors-proxy --proxyUrl https://libseat.tjcu.edu.cn --port 8010
+// Web requires the documented local CORS proxy; mobile connects directly.
 const BASE_URL = Platform.OS === 'web'
   ? 'http://localhost:8010/jsq'
   : 'https://libseat.tjcu.edu.cn/jsq';
 
 let cachedSystemInfo = null;
+let systemInfoFlight = null;
 
-async function ensureSystemInfo() {
-  if (cachedSystemInfo) return cachedSystemInfo;
-  const stored = await getSystemInfo();
-  if (stored) {
-    cachedSystemInfo = stored;
-    return stored;
-  }
-  // 首次获取系统配置 (无需登录)
-  const info = await fetchSysInfo();
-  await saveSystemInfo(info);
-  cachedSystemInfo = info;
-  return info;
+async function ensureSystemInfo(force = false) {
+  if (!force && cachedSystemInfo) return cachedSystemInfo;
+  if (systemInfoFlight) return systemInfoFlight;
+  systemInfoFlight = (async () => {
+    if (!force) {
+      const stored = await getSystemInfo();
+      if (stored && typeof stored === 'object' && !Array.isArray(stored)) {
+        cachedSystemInfo = stored;
+        return stored;
+      }
+    }
+    const info = await fetchSysInfo();
+    await saveSystemInfo(info);
+    cachedSystemInfo = info;
+    return info;
+  })().finally(() => { systemInfoFlight = null; });
+  return systemInfoFlight;
 }
 
 async function fetchSysInfo() {
-  const resp = await fetch(`${BASE_URL}/static/public/cg/getSysSet/PC`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: '{}',
+  const json = await requestJSON(`${BASE_URL}/static/public/cg/getSysSet/PC`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   });
-  const json = await resp.json();
-  if (json.status && json.data) {
-    return json.data;
-  }
-  throw new Error('获取系统配置失败');
+  assertBusinessSuccess(json, '获取系统配置失败');
+  if (json.status && json.data && typeof json.data === 'object' && !Array.isArray(json.data)) return json.data;
+  throw apiError('获取系统配置失败', 'INVALID_RESPONSE');
 }
 
-/**
- * 通用 POST 请求
- */
+function sessionChanged() { return apiError('登录状态已改变，请重新操作', 'SESSION_CHANGED'); }
+function tokenExpired() { return apiError('登录已过期，请重新登录', 'TOKEN_EXPIRED'); }
+
 async function post(path, data = {}, needAuth = true) {
-  const url = `${BASE_URL}${path}`;
-  const headers = {
-    'Content-Type': 'application/json',
-    'logintype': 'PC',
-  };
-
-  if (needAuth) {
-    const token = await getToken();
-    if (token) headers['token'] = token;
+  const version = getSessionVersion();
+  const token = needAuth ? await getToken() : null;
+  if (needAuth && !isSessionCurrent(version)) throw sessionChanged();
+  if (needAuth && !token) {
+    await forceLogout(true, { expectedVersion: version });
+    throw tokenExpired();
   }
-
-  // HMAC 签名 — 认证API强制要求
   const sysInfo = await ensureSystemInfo();
-  if (sysInfo && sysInfo.hmac === 1) {
-    Object.assign(headers, makeHmacHeaders('POST', sysInfo));
-  }
-
   const body = JSON.stringify(data);
-
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers,
-    body,
-  });
-
-  const json = await resp.json();
-
-  // 处理 token 过期 (code 20003) — 自动重登并重试一次
-  if (json.code === '20003' && needAuth) {
-    const { handleTokenExpired, forceLogout } = require('../utils/authManager');
-    const reloginResult = await handleTokenExpired();
-    if (reloginResult.success) {
-      // 重登成功 — 更新token+签名，重试请求
-      const newToken = await getToken();
-      if (newToken) headers['token'] = newToken;
-      const sysInfo2 = await ensureSystemInfo();
-      if (sysInfo2 && sysInfo2.hmac === 1) {
-        ['x-request-id', 'x-request-date', 'x-hmac-request-key'].forEach(k => delete headers[k]);
-        Object.assign(headers, makeHmacHeaders('POST', sysInfo2));
-      }
-      const retryResp = await fetch(url, { method: 'POST', headers, body });
-      const retryJson = await retryResp.json();
-      if (retryJson.code === '20003' || retryJson.status === false) {
-        forceLogout(true);
-        throw new Error('TOKEN_EXPIRED');
-      }
-      return retryJson;
+  const send = async (requestToken) => {
+    if (needAuth && !isSessionCurrent(version)) throw sessionChanged();
+    const headers = { 'Content-Type': 'application/json', logintype: 'PC' };
+    if (requestToken) headers.token = requestToken;
+    if (sysInfo?.hmac === 1) Object.assign(headers, makeHmacHeaders('POST', sysInfo));
+    const json = await requestJSON(`${BASE_URL}${path}`, { method: 'POST', headers, body });
+    if (needAuth && !isSessionCurrent(version)) throw sessionChanged();
+    return json;
+  };
+  let json = await send(token);
+  if (String(json.code) === '20003' && needAuth) {
+    const recovered = await handleTokenExpired(token, version);
+    if (recovered.cancelled) throw sessionChanged();
+    if (!recovered.success) throw tokenExpired();
+    if (!isSessionCurrent(version)) throw sessionChanged();
+    const freshToken = await getToken();
+    json = await send(freshToken);
+    if (String(json.code) === '20003') {
+      await forceLogout(true, { expectedVersion: version, expectedToken: freshToken });
+      throw tokenExpired();
     }
-    // 重登失败也已经由handleTokenExpired内部调用_onExpired处理了
-    throw new Error('TOKEN_EXPIRED');
   }
-
-  if (json.code === '20003') {
-    throw new Error('TOKEN_EXPIRED');
-  }
-  if (json.status === false) {
-    throw new Error(json.message || '请求失败');
-  }
-
-  return json;
+  if (String(json.code) === '20003') throw tokenExpired();
+  return assertBusinessSuccess(json);
 }
-
 /**
  * 获取验证码 — 使用 XMLHttpRequest, 避开 RN fetch 的已知问题
  */
 export async function getCaptcha(username) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    const url = `${BASE_URL}/static/public/cg/generateCaptcha/${username}`;
+    const url = `${BASE_URL}/static/public/cg/generateCaptcha/${encodeURIComponent(username)}`;
     xhr.open('POST', url, true);
     xhr.setRequestHeader('Content-Type', 'application/json');
     xhr.setRequestHeader('loginType', 'PC');
@@ -120,23 +94,23 @@ export async function getCaptcha(username) {
       if (xhr.status === 200) {
         try {
           const json = JSON.parse(xhr.responseText);
-          if (json.status && json.data) {
+          if (json.status && json.data?.captchaId && typeof json.data.captchaText === 'string' && json.data.captchaText) {
             resolve({
               captchaId: json.data.captchaId,
               captchaImage: json.data.captchaText,
             });
           } else {
-            reject(new Error(json.message || '获取验证码失败'));
+            reject(apiError(json.message || '获取验证码失败', json.code || 'BUSINESS_ERROR', { responseBody: json }));
           }
         } catch (e) {
-          reject(new Error('解析验证码响应失败'));
+          reject(apiError('解析验证码响应失败', 'INVALID_JSON'));
         }
       } else {
-        reject(new Error(`请求失败 HTTP ${xhr.status}`));
+        reject(apiError(`请求失败 HTTP ${xhr.status}`, xhr.status ? 'HTTP_ERROR' : 'NETWORK_ERROR', { httpStatus: xhr.status }));
       }
     };
-    xhr.onerror = () => reject(new Error('网络连接失败'));
-    xhr.ontimeout = () => reject(new Error('请求超时'));
+    xhr.onerror = () => reject(apiError('网络连接失败', 'NETWORK_ERROR'));
+    xhr.ontimeout = () => reject(apiError('请求超时', 'TIMEOUT'));
     xhr.send('{}');
   });
 }
@@ -144,7 +118,8 @@ export async function getCaptcha(username) {
 /**
  * 登录
  */
-export async function login(username, password, captchaId, captchaText) {
+export async function login(username, password, captchaId, captchaText, { persistToken = true } = {}) {
+  const version = getSessionVersion();
   const encryptedUsername = encrypt(username);
   const encryptedPassword = encrypt(password);
 
@@ -157,14 +132,14 @@ export async function login(username, password, captchaId, captchaText) {
     },
   }, false);
 
-  if (json.status && json.data) {
-    await saveToken(json.data.token);
+  if (json.status && typeof json.data?.token === 'string' && json.data.token.trim()) {
+    if (persistToken && !await saveToken(json.data.token, { expectedVersion: version })) throw sessionChanged();
     return {
       token: json.data.token,
       userInfo: json.data.userInfoRes,
     };
   }
-  throw new Error(json.message || '登录失败');
+  throw apiError(json.message || '登录响应缺少有效 token', 'INVALID_RESPONSE', { responseBody: json });
 }
 
 /**
@@ -307,8 +282,6 @@ export async function cancelBooking(bookingId) {
  * 初始化: 获取系统配置
  */
 export async function initSystemConfig() {
-  const info = await fetchSysInfo();
-  await saveSystemInfo(info);
-  cachedSystemInfo = info;
-  return info;
+  return ensureSystemInfo(true);
 }
+

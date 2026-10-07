@@ -1,106 +1,54 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator, Alert } from 'react-native';
+import React, { useState, useRef, useCallback } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, FlatList, RefreshControl } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import { getBuildingFloorDate } from '../api/client';
+import ScreenHeader from '../components/ScreenHeader';
+import StateView from '../components/StateView';
+import { colors } from '../theme';
 
 export default function BuildingListScreen({ navigation }) {
   const [buildings, setBuildings] = useState([]);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => { loadBuildings(); }, []);
-
-  const loadBuildings = async () => {
-    setLoading(true);
+  const [error, setError] = useState('');
+  const request = useRef(0);
+  const loadBuildings = useCallback(async () => {
+    const version = ++request.current;
+    setLoading(true); setError('');
     try {
       const resp = await getBuildingFloorDate();
-      if (resp.status && resp.data) {
-        // API 返回 { buildings: [...], dates: [...] }
-        setBuildings(resp.data.buildings || []);
-      } else {
-        Alert.alert('提示', resp.message || '获取建筑列表失败');
-      }
+      if (version !== request.current) return;
+      if (!resp.status) throw new Error(resp.message || '获取场馆失败');
+      setBuildings(Array.isArray(resp.data?.buildings) ? resp.data.buildings.filter(item => item && item.id != null) : []);
     } catch (e) {
-      Alert.alert('错误', e.message || '网络异常');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleBuildingPress = (building) => {
-    navigation.navigate('RoomList', {
-      buildingId: building.id,          // API字段名: id
-      buildingName: building.name || '图书馆',
-      buildingNameE: building.nameE || 'library',
-      floors: building.floors || [],   // API字段名: floors
-    });
-  };
-
-  const renderBuilding = ({ item }) => (
-    <TouchableOpacity style={styles.buildingCard} onPress={() => handleBuildingPress(item)} activeOpacity={0.7}>
-      <View style={styles.buildingInfo}>
-        <Text style={styles.buildingName}>🏛️ {item.name || '图书馆'}</Text>
-        <Text style={styles.buildingDetail}>
-          ⏰ {item.seTime || '08:00 - 21:50'} · 📍 {item.floors?.length || 0}层
-        </Text>
-      </View>
-      <Text style={styles.arrow}>›</Text>
-    </TouchableOpacity>
-  );
-
-  if (loading) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" color="#1677FF" />
-        <Text style={styles.loadingText}>加载中...</Text>
-      </View>
-    );
-  }
-
+      if (version === request.current && e.message !== 'TOKEN_EXPIRED') setError(e.message || '网络异常，请重试');
+    } finally { if (version === request.current) setLoading(false); }
+  }, []);
+  useFocusEffect(useCallback(() => { loadBuildings(); return () => { request.current += 1; }; }, [loadBuildings]));
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>选择场馆</Text>
-        <Text style={styles.subtitle}>请选择要预约的图书馆区域</Text>
-      </View>
-      <FlatList
-        data={buildings}
-        renderItem={renderBuilding}
-        keyExtractor={(item) => item.id}
-        contentContainerStyle={styles.list}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyIcon}>📭</Text>
-            <Text style={styles.emptyText}>暂无可预约场馆</Text>
-            <TouchableOpacity style={styles.retryBtn} onPress={loadBuildings}>
-              <Text style={styles.retryText}>点击重试</Text>
-            </TouchableOpacity>
-          </View>
-        }
-      />
+      <ScreenHeader title="预约选座" subtitle="选择场馆，找到适合你的学习空间" />
+      <FlatList data={buildings} keyExtractor={item => String(item.id)} contentContainerStyle={styles.list}
+        refreshControl={<RefreshControl refreshing={loading && buildings.length > 0} onRefresh={loadBuildings} tintColor={colors.primary} />}
+        ListHeaderComponent={buildings.length ? <><Text style={styles.section}>可预约场馆 · {buildings.length}</Text>{error ? <StateView error={error} onRetry={loadBuildings} /> : null}</> : null}
+        ListEmptyComponent={<StateView loading={loading} error={error} empty="暂无可预约场馆" onRetry={loadBuildings} />}
+        renderItem={({ item }) => (
+          <TouchableOpacity style={styles.card} activeOpacity={0.8} accessibilityRole="button"
+            onPress={() => navigation.navigate('RoomList', { buildingId: item.id, buildingName: item.name || item.nameE || '图书馆', buildingNameE: item.nameE, floors: Array.isArray(item.floors) ? item.floors : [] })}>
+            <View style={styles.icon}><Text style={styles.iconText}>🏛️</Text></View>
+            <View style={styles.info}>
+              <Text style={styles.name}>{item.name || item.nameE || '图书馆'}</Text>
+              <Text style={styles.detail}>{item.seTime ? `开放 ${item.seTime}` : '开放时间请以场馆公告为准'}</Text>
+              <Text style={styles.tag}>{item.floors?.length || 0} 个楼层 · 查看学习区域</Text>
+            </View>
+            <Text style={styles.arrow}>›</Text>
+          </TouchableOpacity>
+        )} />
     </View>
   );
 }
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f7fa' },
-  header: { backgroundColor: '#1677FF', paddingHorizontal: 20, paddingTop: 60, paddingBottom: 24 },
-  title: { fontSize: 28, fontWeight: 'bold', color: '#fff', marginBottom: 6 },
-  subtitle: { fontSize: 14, color: 'rgba(255,255,255,0.8)' },
-  list: { padding: 16 },
-  buildingCard: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-    borderRadius: 16, padding: 18, marginBottom: 12,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05, shadowRadius: 8, elevation: 2,
-  },
-  buildingInfo: { flex: 1 },
-  buildingName: { fontSize: 18, fontWeight: '600', color: '#333', marginBottom: 6 },
-  buildingDetail: { fontSize: 14, color: '#888' },
-  arrow: { fontSize: 28, color: '#ccc', marginLeft: 12 },
-  loading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#f5f7fa' },
-  loadingText: { marginTop: 12, fontSize: 14, color: '#999' },
-  empty: { alignItems: 'center', marginTop: 80 },
-  emptyIcon: { fontSize: 64, marginBottom: 16 },
-  emptyText: { fontSize: 16, color: '#999' },
-  retryBtn: { marginTop: 16, paddingHorizontal: 20, paddingVertical: 10, backgroundColor: '#1677FF', borderRadius: 20 },
-  retryText: { color: '#fff', fontSize: 14 },
+  container: { flex: 1, backgroundColor: colors.background }, list: { padding: 16, paddingBottom: 28, flexGrow: 1 }, section: { color: colors.muted, fontSize: 13, marginBottom: 14 },
+  card: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.surface, borderRadius: 18, borderWidth: 1, borderColor: colors.border, padding: 16, marginBottom: 12 },
+  icon: { backgroundColor: '#eef5ff', width: 50, height: 54, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginRight: 14 }, iconText: { fontSize: 26 }, info: { flex: 1 },
+  name: { fontSize: 18, fontWeight: '700', color: colors.text }, detail: { color: colors.muted, fontSize: 12, marginTop: 6 }, tag: { color: colors.primary, fontSize: 12, marginTop: 9 }, arrow: { color: colors.muted, fontSize: 28, marginLeft: 12 },
 });

@@ -2,7 +2,7 @@
   "expo": {
     "name": "天商书座",
     "slug": "seat-booker",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/icon_v1_blue.png",
     "userInterfaceStyle": "light",
@@ -25,19 +25,19 @@
         "backgroundColor": "#1677FF"
       },
       "package": "com.seatbooker.app",
-      "versionCode": 5,
-      "usesCleartextTraffic": true,
+      "versionCode": 6,
       "permissions": [
-        "INTERNET",
-        "POST_NOTIFICATIONS",
-        "SCHEDULE_EXACT_ALARM",
-        "RECEIVE_BOOT_COMPLETED",
-        "WAKE_LOCK"
+        "INTERNET"
+      ],
+      "blockedPermissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.VIBRATE"
       ]
     },
     "plugins": [
-      "expo-notifications",
-      "expo-asset"
+      "expo-asset",
+      "./plugins/withAndroidNetwork"
     ],
     "extra": {
       "eas": {

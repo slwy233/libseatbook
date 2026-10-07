@@ -1,94 +1,68 @@
-/**
- * 验证码 OCR - 使用本地 ddddocr 服务
- */
-
-// 阿里云 ddddocr 服务器
+/** CAPTCHA OCR with a bounded end-to-end fallback to manual entry. */
+import { requestJSON, apiError } from '../api/http';
 const OCR_SERVER = 'http://39.106.98.187:8910';
 
-/**
- * OCR识别: 发送图片到本地ddddocr服务
- */
-async function ocrImage(base64Image) {
-  try {
-    const resp = await fetch(OCR_SERVER, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64Image }),
-    });
-    const json = await resp.json();
-    return json; // { raw, text, isMath, answer }
-  } catch (e) {
-    console.log('[OCR] 服务不可达:', e.message);
-    return null;
-  }
-}
-
-/**
- * 识别验证码
- */
-export async function recognizeCaptcha(base64Image) {
-  const result = await ocrImage(base64Image);
-  if (!result) return '';
-  if (result.text) return result.text;
-  // 降级: 有raw但没解析出来
-  if (result.raw && result.raw.length >= 2) {
+export async function recognizeCaptcha(base64Image, timeoutMs = 6000) {
+  const result = await requestJSON(OCR_SERVER, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: base64Image }),
+  }, timeoutMs);
+  if (result.error) throw apiError('验证码识别服务暂不可用，请手动输入', 'OCR_UNAVAILABLE');
+  if (typeof result.text === 'string' && result.text.trim()) return result.text.trim();
+  if (typeof result.raw === 'string' && result.raw.length >= 2) {
     return result.raw.replace(/[^a-zA-Z0-9\-]/g, '').substring(0, 6);
   }
   return '';
 }
 
-/**
- * 自动登录
- */
+function within(promise, ms) {
+  let timer;
+  return Promise.race([promise, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(apiError('自动登录超时，请手动输入验证码', 'TIMEOUT')), ms);
+  })]).finally(() => clearTimeout(timer));
+}
+
 export async function autoLoginWithCaptcha(
-  getCaptchaFn,
-  loginFn,
-  maxRetries = 5,
-  onProgress = null
+  getCaptchaFn, loginFn, maxRetries = 5, onProgress = null,
+  { deadlineMs = 25000, shouldContinue = () => true } = {}
 ) {
+  const deadline = Date.now() + deadlineMs;
+  const progress = (attempt, stage, message) => onProgress?.(attempt, stage, message);
+  const manual = message => ({ success: false, needManual: true, message });
+  const remaining = () => Math.max(1, deadline - Date.now());
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    if (onProgress) onProgress(attempt, 'fetching', `获取验证码 (${attempt}/${maxRetries})...`);
-    let captchaData;
+    if (!shouldContinue()) return { success: false, cancelled: true };
+    if (Date.now() >= deadline) return manual('自动登录超时，请手动输入验证码');
     try {
-      captchaData = await getCaptchaFn();
-    } catch (e) {
-      if (onProgress) onProgress(attempt, 'error', '获取验证码失败');
-      continue;
-    }
-
-    if (onProgress) onProgress(attempt, 'ocr', 'ddddocr识别中...');
-    let captchaText;
-    try {
-      captchaText = await recognizeCaptcha(captchaData.captchaImage);
-    } catch (e) {
-      captchaText = '';
-    }
-
-    if (!captchaText || captchaText.length < 1) {
-      if (onProgress) onProgress(attempt, 'ocr_fail', '未识别，重试...');
-      continue;
-    }
-
-    if (onProgress) onProgress(attempt, 'login', `验证码: ${captchaText}，登录中...`);
-    try {
-      const result = await loginFn(captchaData.captchaId, captchaText);
-      if (result && result.token) {
-        if (onProgress) onProgress(attempt, 'success', '登录成功!');
+      progress(attempt, 'fetching', `获取验证码 (${attempt}/${maxRetries})...`);
+      const captcha = await within(Promise.resolve().then(getCaptchaFn), remaining());
+      if (!shouldContinue()) return { success: false, cancelled: true };
+      progress(attempt, 'ocr', '正在识别验证码...');
+      const text = await recognizeCaptcha(captcha.captchaImage, Math.min(6000, remaining()));
+      if (!shouldContinue()) return { success: false, cancelled: true };
+      if (!text) {
+        progress(attempt, 'ocr_fail', '未识别，重试...');
+        continue;
+      }
+      if (Date.now() >= deadline) return manual('自动登录超时，请手动输入验证码');
+      progress(attempt, 'login', '正在登录...');
+      const result = await within(Promise.resolve().then(() => loginFn(captcha.captchaId, text)), remaining());
+      if (!shouldContinue()) return { success: false, cancelled: true };
+      if (result?.token) {
+        progress(attempt, 'success', '登录成功');
         return { success: true, needManual: false, result, message: '登录成功' };
       }
-      if (onProgress) onProgress(attempt, 'retry', '验证码错误，重试...');
-    } catch (e) {
-      const msg = e.message || '';
-      if (/密码|学号|账号|用户|不存在|禁用/.test(msg)) {
-        return { success: false, needManual: false, message: msg };
+      return manual('登录响应无效，请手动登录');
+    } catch (error) {
+      if (!shouldContinue()) return { success: false, cancelled: true };
+      const message = error.message || '自动登录失败';
+      if (['NETWORK_ERROR', 'HTTP_ERROR', 'INVALID_JSON', 'INVALID_RESPONSE', 'TIMEOUT', 'OCR_UNAVAILABLE'].includes(error.code)) {
+        return manual(message);
       }
-      if (onProgress) onProgress(attempt, 'retry', msg);
+      // Only an explicit CAPTCHA mismatch merits another login attempt.
+      if (!/验证码|captcha/i.test(message)) return manual(message);
+      progress(attempt, 'retry', message);
     }
   }
-
-  return {
-    success: false,
-    needManual: true,
-    message: `自动识别 ${maxRetries} 次均失败，请手动输入`,
-  };
+  return manual(`自动识别 ${maxRetries} 次均失败，请手动输入验证码`);
 }

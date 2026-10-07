@@ -7,3 +7,10 @@ android/
 *.hbc.map
 web-build/
 __tests__/
+__pycache__/
+outputs/
+
+# Local backend task credentials and atomic-write temporary files
+/ocr_server/schedule_tasks.json
+/local-tasks.json
+**/.schedule-*.tmp

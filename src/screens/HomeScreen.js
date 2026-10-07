@@ -1,207 +1,83 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
+import React, { useState, useCallback, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, ScrollView, RefreshControl } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { getCurrentMake, cancelBooking } from '../api/client';
-import { getUserInfo, removeToken } from '../utils/storage';
+import { getCurrentMake, getUserInfo as fetchUserInfo } from '../api/client';
+import { getUserInfo, saveUserInfo, getSessionVersion, isSessionCurrent } from '../utils/storage';
+import { forceLogout } from '../utils/authManager';
 import { getSchedules } from '../api/scheduleApi';
-
+import { todayDateStr } from '../utils/time';
+import ScreenHeader from '../components/ScreenHeader';
+import StateView from '../components/StateView';
+import BookingCard from '../components/BookingCard';
+import useBookingCancel from '../hooks/useBookingCancel';
+import { colors } from '../theme';
 export default function HomeScreen({ navigation }) {
   const [userInfo, setUserInfo] = useState(null);
   const [currentBooking, setCurrentBooking] = useState(null);
-  const [scheduleSummary, setScheduleSummary] = useState(null);
-
-  useFocusEffect(useCallback(() => { loadData(); }, []));
-
-  const loadData = async () => {
-    const info = await getUserInfo();
-    if (info) setUserInfo(info);
-
-    try {
-      const resp = await getCurrentMake();
-      if (resp.status && resp.data && resp.data.id) {
-        setCurrentBooking(resp.data);
-      } else {
-        setCurrentBooking(null);
-      }
-    } catch (e) {}
-
-    // 拉取定时任务结果摘要
-    try {
-      const sResp = await getSchedules();
-      if (sResp.status && sResp.data) {
-        const today = new Date().toISOString().slice(0, 10);
-        const latest = sResp.data
-          .filter(t => t.enabled)
-          .flatMap(t => {
-            const r = t.results || {};
-            return Object.entries(r).map(([d, v]) => ({ date: d, result: v, buildingName: t.buildingName, roomName: t.roomName }));
-          })
-          .filter(e => e.date === today && e.result)
-          .slice(-3);
-        setScheduleSummary(latest.length > 0 ? latest : null);
-      }
-    } catch (e) {}
-  };
-
-  const handleLogout = () => {
-    Alert.alert('退出登录', '确定要退出吗？', [
-      { text: '取消', style: 'cancel' },
-      { text: '退出', style: 'destructive', onPress: async () => {
-        await removeToken();
-        navigation.replace('Login');
-      }},
-    ]);
-  };
-
-  const Stat = ({ label, value }) => (
-    <View style={styles.statItem}>
-      <Text style={styles.statNum}>{value ?? '--'}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-
+  const [scheduleSummary, setScheduleSummary] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const request = useRef(0);
+  const loadData = useCallback(async (refresh = false) => {
+    const id = ++request.current;
+    const session = getSessionVersion();
+    const active = () => request.current === id && isSessionCurrent(session);
+    if (refresh) setRefreshing(true); else setLoading(true);
+    const cached = await getUserInfo().catch(() => null);
+    if (cached && active()) setUserInfo(cached);
+    const [user, booking, schedules] = await Promise.allSettled([fetchUserInfo(), getCurrentMake(), getSchedules()]);
+    if (!active()) return;
+    const nextErrors = {};
+    if (user.status === 'fulfilled') {
+      setUserInfo(user.value.data);
+      await saveUserInfo(user.value.data, session).catch(() => {});
+    } else nextErrors.user = user.reason.message;
+    if (!active()) return;
+    if (booking.status === 'fulfilled') setCurrentBooking(booking.value.data?.id ? booking.value.data : null);
+    else nextErrors.booking = booking.reason.message;
+    if (schedules.status === 'fulfilled') {
+      const today = todayDateStr();
+      setScheduleSummary((Array.isArray(schedules.value.data) ? schedules.value.data : [])
+        .filter(task => task.results?.[today])
+        .slice(-3).map(task => ({ id: task.id, result: String(task.results[today]), room: task.roomName })));
+    } else nextErrors.schedules = schedules.reason.message;
+    setErrors(nextErrors); setLoading(false); setRefreshing(false);
+  }, []);
+  useFocusEffect(useCallback(() => { loadData(); return () => { request.current++; }; }, [loadData]));
+  const { cancel, cancelingId } = useBookingCancel(() => loadData(true));
+  const logout = () => Alert.alert('退出登录', '退出后将清除本机保存的账号和密码。服务器上的定时任务仍会继续执行，可先在“定时”中暂停。', [
+    { text: '取消', style: 'cancel' },
+    { text: '退出', style: 'destructive', onPress: async () => {
+      try { await forceLogout(false, { notify: false, forgetCredentials: true }); }
+      catch (e) { Alert.alert('退出失败', e.message); }
+    } },
+  ]);
   return (
     <View style={styles.container}>
-      {/* 用户信息栏 */}
-      <View style={styles.userBar}>
-        <View style={styles.userInfo}>
-          <Text style={styles.userName}>{userInfo?.fullName || '同学'}</Text>
-          <Text style={styles.userDept}>{userInfo?.collegeDepName || ''} · {userInfo?.username || ''}</Text>
-        </View>
-        <View style={styles.userStats}>
-          <Stat label="积分" value={userInfo?.scoreNum} />
-          <Stat label="违约" value={userInfo?.breachNum} />
-          <Stat label="预约" value={userInfo?.totalMake} />
-        </View>
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <Text style={styles.logoutText}>退出</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* 当前预约 */}
-      <ScrollView style={styles.body} showsVerticalScrollIndicator={false}>
-        {currentBooking ? (
-          <View style={styles.bookingCard}>
-            <View style={styles.bookingHeader}>
-              <Text style={styles.bookingStatus}>🔵 已预约</Text>
-              <TouchableOpacity onPress={() => {
-                Alert.alert('取消预约', '确定要取消吗？', [
-                  { text: '再想想', style: 'cancel' },
-                  { text: '确定取消', style: 'destructive', onPress: async () => {
-                    try { await cancelBooking(currentBooking.id); loadData(); }
-                    catch (e) { Alert.alert('错误', e.message); }
-                  }},
-                ]);
-              }}>
-                <Text style={styles.cancelText}>取消</Text>
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.bookingDetail}>
-              {currentBooking.seatLabel}号 · {currentBooking.buildName}{' '}
-              {currentBooking.floorName} {currentBooking.roomName}
-            </Text>
-            <Text style={styles.bookingTime}>
-              📅 {currentBooking.makeDateStr} ⏰ {currentBooking.makeBeginStr}-{currentBooking.makeEndStr}
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.noBooking}>
-            <Text style={styles.noBookingIcon}>🪑</Text>
-            <Text style={styles.noBookingText}>当前没有预约</Text>
-          </View>
-        )}
-
-        {/* 定时预约结果摘要 */}
-        {scheduleSummary && (
-          <View style={styles.scheduleCard}>
-            <Text style={styles.scheduleCardTitle}>🤖 今日定时预约</Text>
-            {scheduleSummary.map((e, i) => (
-              <Text key={i} style={[styles.scheduleItem, {
-                color: e.result.startsWith('✅') ? '#52c41a' : e.result.startsWith('❌') ? '#ff4d4f' : e.result.startsWith('⚠️') ? '#faad14' : '#666'
-              }]}>· {e.result}</Text>
-            ))}
-          </View>
-        )}
-
-        {/* 快捷入口 */}
-        <Text style={styles.sectionTitle}>快捷操作</Text>
-
-        <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Book')}>
-          <Text style={styles.actionIcon}>🪑</Text>
-          <View style={styles.actionInfo}>
-            <Text style={styles.actionTitle}>预约选座</Text>
-            <Text style={styles.actionDesc}>查看空闲座位并预约</Text>
-          </View>
-          <Text style={styles.actionArrow}>›</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('Schedule')}>
-          <Text style={styles.actionIcon}>⏰</Text>
-          <View style={styles.actionInfo}>
-            <Text style={styles.actionTitle}>定时预约</Text>
-            <Text style={styles.actionDesc}>设置自动预约任务 · 服务器每日执行</Text>
-          </View>
-          <Text style={styles.actionArrow}>›</Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity style={styles.actionBtn} onPress={() => navigation.navigate('My')}>
-          <Text style={styles.actionIcon}>📋</Text>
-          <View style={styles.actionInfo}>
-            <Text style={styles.actionTitle}>我的预约</Text>
-            <Text style={styles.actionDesc}>查看预约记录和签到信息</Text>
-          </View>
-          <Text style={styles.actionArrow}>›</Text>
-        </TouchableOpacity>
-
-        <View style={{ height: 30 }} />
+      <ScreenHeader title={(userInfo?.fullName || '同学') + '，你好'} subtitle="天商书座 · 安排你的学习时间" action={<TouchableOpacity style={styles.logout} onPress={logout}><Text style={{ color: '#fff' }}>退出</Text></TouchableOpacity>} />
+      <ScrollView contentContainerStyle={styles.body} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => loadData(true)} />}>
+        <View style={styles.stats}>{[['积分', userInfo?.scoreNum], ['违约次数', userInfo?.breachNum], ['累计预约', userInfo?.totalMake]].map(([label, value]) => <View key={label} style={styles.stat}><Text style={styles.statValue}>{value ?? '—'}</Text><Text style={styles.statLabel}>{label}</Text></View>)}</View>
+        {errors.user && <Text style={styles.note}>个人信息未能更新，当前显示上次缓存。</Text>}
+        <View style={styles.section}><Text style={styles.sectionTitle}>当前预约</Text><TouchableOpacity onPress={() => navigation.navigate('My')}><Text style={styles.link}>全部记录 ›</Text></TouchableOpacity></View>
+        {loading ? <StateView loading /> : errors.booking ? <StateView error={errors.booking} onRetry={() => loadData(true)} /> : currentBooking ? <BookingCard booking={currentBooking} onCancel={cancel} canceling={cancelingId !== null} /> : <View style={styles.empty}><Text style={styles.emptyTitle}>还没有当前预约</Text><Text style={styles.note}>找一处空闲座位，开始今天的学习。</Text><TouchableOpacity style={styles.primary} onPress={() => navigation.navigate('Book')}><Text style={styles.primaryText}>去选座</Text></TouchableOpacity></View>}
+        <Text style={styles.sectionTitle}>学习安排</Text>
+        <TouchableOpacity style={styles.action} onPress={() => navigation.navigate('Schedule')}><View style={styles.actionIcon}><Text style={{ fontSize: 26, color: colors.primary }}>◷</Text></View><View style={{ flex: 1 }}><Text style={styles.actionTitle}>定时预约</Text><Text style={styles.note}>按日期和时段设置服务器任务</Text></View><Text style={styles.arrow}>›</Text></TouchableOpacity>
+        {errors.schedules ? <Text style={styles.note}>定时服务暂不可用，可在“定时”页面重新加载。</Text> : scheduleSummary.map(item => <View key={item.id} style={styles.result}><Text style={styles.resultRoom}>{item.room || '今日任务'}</Text><Text style={styles.resultText}>{item.result}</Text></View>)}
       </ScrollView>
     </View>
   );
 }
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f7fa' },
-  userBar: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#1677FF',
-    paddingHorizontal: 16, paddingTop: 50, paddingBottom: 14,
-  },
-  userInfo: { flex: 1 },
-  userName: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  userDept: { color: 'rgba(255,255,255,0.7)', fontSize: 12, marginTop: 2 },
-  userStats: { flexDirection: 'row', marginRight: 12, gap: 12 },
-  statItem: { alignItems: 'center' },
-  statNum: { color: '#fff', fontSize: 16, fontWeight: 'bold' },
-  statLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 10 },
-  logoutBtn: { paddingHorizontal: 12, paddingVertical: 6, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 8 },
-  logoutText: { color: '#fff', fontSize: 12 },
-
-  body: { flex: 1, padding: 16 },
-
-  bookingCard: { backgroundColor: '#fff', borderRadius: 14, padding: 16, marginBottom: 16, borderLeftWidth: 4, borderLeftColor: '#1677FF' },
-  bookingHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  bookingStatus: { fontSize: 15, fontWeight: '600', color: '#333' },
-  cancelText: { color: '#ff4d4f', fontSize: 14, fontWeight: '600' },
-  bookingDetail: { fontSize: 14, color: '#333', marginBottom: 4 },
-  bookingTime: { fontSize: 13, color: '#888' },
-
-  noBooking: { backgroundColor: '#fff', borderRadius: 14, padding: 24, alignItems: 'center', marginBottom: 16 },
-  noBookingIcon: { fontSize: 40, marginBottom: 6 },
-  noBookingText: { fontSize: 15, color: '#999' },
-
-  scheduleCard: { backgroundColor: '#fefce8', borderRadius: 12, padding: 14, marginBottom: 16, borderWidth: 1, borderColor: '#fde68a' },
-  scheduleCardTitle: { fontSize: 14, fontWeight: '600', color: '#854d0e', marginBottom: 6 },
-  scheduleItem: { fontSize: 13, lineHeight: 20 },
-
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', color: '#333', marginBottom: 10 },
-
-  actionBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff',
-    borderRadius: 14, padding: 16, marginBottom: 10,
-  },
-  actionIcon: { fontSize: 28, marginRight: 14 },
-  actionInfo: { flex: 1 },
-  actionTitle: { fontSize: 16, fontWeight: '600', color: '#333' },
-  actionDesc: { fontSize: 13, color: '#888', marginTop: 2 },
-  actionArrow: { fontSize: 24, color: '#ccc' },
-  tip: { fontSize: 12, color: '#bbb', textAlign: 'center', marginTop: 20 },
+  container: { flex: 1, backgroundColor: colors.background }, body: { padding: 20, paddingBottom: 32 },
+  logout: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.15)' },
+  stats: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 18, paddingVertical: 20, marginBottom: 20 },
+  stat: { flex: 1, alignItems: 'center' }, statValue: { fontSize: 25, fontWeight: '700', color: colors.text }, statLabel: { fontSize: 12, color: colors.muted, marginTop: 6 },
+  section: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }, sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginVertical: 8 }, link: { color: colors.primary, fontSize: 13, paddingVertical: 10 },
+  note: { fontSize: 13, lineHeight: 20, color: colors.muted, marginTop: 6 },
+  empty: { padding: 22, backgroundColor: '#fff', borderRadius: 18, marginBottom: 20, borderWidth: 1, borderColor: colors.border }, emptyTitle: { fontSize: 18, fontWeight: '600', color: colors.text },
+  primary: { backgroundColor: colors.primary, alignItems: 'center', borderRadius: 12, paddingVertical: 13, marginTop: 16 }, primaryText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+  action: { backgroundColor: '#fff', borderRadius: 18, padding: 18, marginTop: 10, flexDirection: 'row', gap: 14, alignItems: 'center' }, actionIcon: { backgroundColor: '#eaf2ff', width: 48, height: 48, borderRadius: 14, justifyContent: 'center', alignItems: 'center' }, actionTitle: { fontSize: 16, fontWeight: '600', color: colors.text }, arrow: { fontSize: 24, color: colors.muted },
+  result: { marginTop: 10, backgroundColor: '#fff', padding: 14, borderRadius: 12 }, resultRoom: { color: colors.muted, fontSize: 12 }, resultText: { color: colors.text, fontSize: 13, marginTop: 6, lineHeight: 20 },
 });
+

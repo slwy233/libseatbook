@@ -1,343 +1,142 @@
 import React, { useState, useEffect, useRef } from 'react';
-import {
-  View,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  StyleSheet,
-  Image,
-  Alert,
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Image, Alert, ActivityIndicator, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { login, getCaptcha, initSystemConfig } from '../api/client';
 import { autoLoginWithCaptcha } from '../utils/ocr';
-import { saveCredentials, getCredentials, saveUserInfo } from '../utils/storage';
+import { saveCredentials, getCredentials, saveUserInfo, saveToken, getSessionVersion, isSessionCurrent } from '../utils/storage';
+import { colors } from '../theme';
 
 export default function LoginScreen({ navigation, route }) {
+  const insets = useSafeAreaInsets();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // 手动验证码 (5次自动重试失败后展示)
-  const [manualMode, setManualMode] = useState(false);
+  const [manualMode, setManualMode] = useState(!!route?.params?.forceReLogin);
   const [captchaText, setCaptchaText] = useState('');
-  const [captchaId, setCaptchaId] = useState('');
-  const [captchaImage, setCaptchaImage] = useState(null);
+  const [captchaData, setCaptchaData] = useState(null);
   const [captchaLoading, setCaptchaLoading] = useState(false);
-
-  // 自动登录进度
   const [autoStatus, setAutoStatus] = useState('');
-  const [autoAttempt, setAutoAttempt] = useState(0);
-
+  const [error, setError] = useState('');
   const passwordRef = useRef(null);
-  const captchaRef = useRef(null);
+  const mounted = useRef(true);
+  const busy = useRef(false);
+  const captchaRequest = useRef(0);
 
   useEffect(() => {
-    (async () => {
-      const creds = await getCredentials();
+    mounted.current = true;
+    getCredentials().then(creds => {
+      if (!mounted.current) return;
       if (creds.username) setUsername(creds.username);
       if (creds.password) setPassword(creds.password);
-      try { await initSystemConfig(); } catch (e) {}
-    })();
+    }).catch(() => { if (mounted.current) setError('无法读取本机账号，请手动输入'); });
+    initSystemConfig().catch(e => { if (mounted.current) setError(e.message); });
+    return () => { mounted.current = false; captchaRequest.current++; };
   }, []);
 
-  // 强制重登参数处理：自动重登8次失败后，直接显示手动验证码模式
-  const didCheckForce = useRef(false);
+  const fetchCaptcha = async (account = username.trim()) => {
+    if (!account || busy.current) return;
+    const id = ++captchaRequest.current;
+    setCaptchaLoading(true); setCaptchaText(''); setCaptchaData(null);
+    try {
+      const result = await getCaptcha(account);
+      if (mounted.current && id === captchaRequest.current) setCaptchaData(result);
+    } catch (e) {
+      if (mounted.current && id === captchaRequest.current) setError(e.message);
+    } finally {
+      if (mounted.current && id === captchaRequest.current) setCaptchaLoading(false);
+    }
+  };
   useEffect(() => {
-    if (route?.params?.forceReLogin && !didCheckForce.current) {
-      didCheckForce.current = true;
-      setManualMode(true);
-      // 延迟获取验证码，确保mount完成
-      setTimeout(() => {
-        if (username.trim()) fetchCaptcha();
-      }, 500);
-    }
-  }, [route?.params?.forceReLogin, username]);
+    if (manualMode && username.trim()) fetchCaptcha();
+    else { captchaRequest.current++; setCaptchaData(null); setCaptchaText(''); setCaptchaLoading(false); }
+  }, [manualMode, username]);
 
-  // 手动获取验证码
-  const fetchCaptcha = async () => {
-    if (!username.trim()) {
-      Alert.alert('提示', '请先输入学号');
-      return;
+  const submit = async () => {
+    if (busy.current) return;
+    const account = username.trim();
+    if (!account || !password) { setError('请输入学号和密码'); return; }
+    if (manualMode && (captchaLoading || !captchaData?.captchaId || !captchaText.trim())) {
+      setError('请获取验证码并输入图片中的内容'); return;
     }
-    setCaptchaLoading(true);
-    setCaptchaText('');
+    const session = getSessionVersion();
+    const active = () => mounted.current && isSessionCurrent(session);
+    busy.current = true; setLoading(true); setError('');
+    let retryManual = false;
     try {
-      const result = await getCaptcha(username.trim());
-      setCaptchaId(result.captchaId);
-      setCaptchaImage(result.captchaImage);
-    } catch (e) {
-      Alert.alert('获取验证码失败', e.message || '网络错误，请重试');
-    } finally {
-      setCaptchaLoading(false);
-    }
-  };
-
-  // 手动登录
-  const handleManualLogin = async () => {
-    if (!username.trim() || !password.trim()) {
-      Alert.alert('提示', '学号和密码不能为空');
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await login(
-        username.trim(), password,
-        captchaId, captchaText || '-1'
-      );
-      await saveCredentials(username.trim(), password);
-      await saveUserInfo(result.userInfo);
-      navigation.replace('Main');
-    } catch (e) {
-      Alert.alert('登录失败', e.message || '未知错误');
-      fetchCaptcha();
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 自动登录主流程: OCR识别 → 重试5次 → 失败则手动
-  const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) {
-      Alert.alert('提示', '学号和密码不能为空');
-      return;
-    }
-
-    setLoading(true);
-    setManualMode(false);
-    setAutoStatus('正在获取验证码...');
-    setAutoAttempt(0);
-
-    try {
-      const result = await autoLoginWithCaptcha(
-        async () => await getCaptcha(username.trim()),
-        async (cid, ctext) => await login(username.trim(), password, cid, ctext),
-        5, // maxRetries
-        (attempt, status, msg) => {
-          setAutoAttempt(attempt);
-          setAutoStatus(msg);
-        }
-      );
-
-      if (result.success) {
-        await saveCredentials(username.trim(), password);
-        await saveUserInfo(result.result.userInfo);
-        setAutoStatus('登录成功! 🎉');
-        setTimeout(() => navigation.replace('Main'), 400);
-        return;
-      }
-
-      if (result.needManual) {
-        setManualMode(true);
-        setAutoStatus('');
-        if (result.captchaImage) {
-          setCaptchaImage(result.captchaImage);
-          setCaptchaId(result.captchaId || '');
-        } else {
-          fetchCaptcha();
-        }
-        Alert.alert(
-          '需要手动输入',
-          result.message || '自动识别失败，请输入验证码',
-          [{ text: '好的' }]
+      let result;
+      if (manualMode) {
+        result = await login(account, password, captchaData.captchaId, captchaText.trim(), { persistToken: false });
+      } else {
+        const attempt = await autoLoginWithCaptcha(
+          () => getCaptcha(account),
+          (id, text) => login(account, password, id, text, { persistToken: false }),
+          5, (_, __, message) => { if (active()) setAutoStatus(message); },
         );
-        return;
+        if (!active()) return;
+        if (!attempt.success) {
+          setError(attempt.message);
+          if (attempt.needManual) { setManualMode(true); retryManual = true; }
+          return;
+        }
+        result = attempt.result;
       }
-
-      // 非验证码错误
-      Alert.alert('登录失败', result.message);
-      setAutoStatus('');
+      if (!active()) return;
+      await saveCredentials(account, password, session);
+      if (!active()) return;
+      await saveUserInfo(result.userInfo, session);
+      if (!active()) return;
+      const saved = await saveToken(result.token, { expectedVersion: session });
+      if (saved && mounted.current) navigation.reset({ index: 0, routes: [{ name: 'Main' }] });
     } catch (e) {
-      Alert.alert('错误', e.message || '网络异常');
-      setAutoStatus('');
+      if (active()) { setError(e.message); retryManual = manualMode; }
     } finally {
-      setLoading(false);
+      busy.current = false;
+      if (mounted.current) { setLoading(false); setAutoStatus(''); if (retryManual) fetchCaptcha(account); }
     }
   };
-
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.header}>
-          <Text style={styles.appName}>📚 图书馆座位预约</Text>
-          <Text style={styles.subtitle}>天津商业大学</Text>
-        </View>
-
+    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScrollView contentContainerStyle={[styles.content, { paddingTop: insets.top + 32, paddingBottom: insets.bottom + 24 }]} keyboardShouldPersistTaps="handled">
+        <View style={styles.mark}><Text style={styles.markText}>书</Text></View>
+        <Text style={styles.title}>天商书座</Text><Text style={styles.subtitle}>天津商业大学 · 图书馆座位预约</Text>
         <View style={styles.form}>
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>学号</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="请输入学号"
-              value={username}
-              onChangeText={setUsername}
-              keyboardType="number-pad"
-              returnKeyType="next"
-              onSubmitEditing={() => passwordRef.current?.focus()}
-              autoCapitalize="none"
-              editable={!loading}
-            />
+          <Text style={styles.formTitle}>登录你的账号</Text>
+          <Text style={styles.label}>学号</Text>
+          <TextInput style={styles.input} placeholder="请输入学号" value={username} onChangeText={value => { setUsername(value); setError(''); }} keyboardType="number-pad" autoCapitalize="none" autoCorrect={false} editable={!loading} returnKeyType="next" onSubmitEditing={() => passwordRef.current?.focus()} accessibilityLabel="学号" />
+          <Text style={styles.label}>密码</Text>
+          <TextInput ref={passwordRef} style={styles.input} placeholder="请输入密码" value={password} onChangeText={setPassword} secureTextEntry editable={!loading} returnKeyType="done" onSubmitEditing={submit} accessibilityLabel="密码" />
+          <View style={styles.modeRow}>
+            <Text style={styles.modeLabel}>{manualMode ? '手动验证码' : '自动识别验证码'}</Text>
+            <TouchableOpacity onPress={() => { setManualMode(!manualMode); setError(''); }} disabled={loading} style={styles.modeButton}><Text style={styles.link}>{manualMode ? '切换自动识别' : '使用手动输入'}</Text></TouchableOpacity>
           </View>
-
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>密码</Text>
-            <TextInput
-              ref={passwordRef}
-              style={styles.input}
-              placeholder="请输入密码"
-              defaultValue={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              returnKeyType="done"
-              onSubmitEditing={handleLogin}
-              editable={!loading}
-            />
-          </View>
-
-          {/* 自动登录进度 */}
-          {loading && !manualMode && (
-            <View style={styles.statusBar}>
-              <ActivityIndicator size="small" color="#1677FF" />
-              <Text style={styles.statusText}>{autoStatus}</Text>
-              {autoAttempt > 0 && (
-                <Text style={styles.attemptText}>{autoAttempt}/5</Text>
-              )}
-            </View>
-          )}
-
-          {/* 手动验证码 (5次重试失败后出现) */}
-          {manualMode && (
-            <View style={styles.captchaBox}>
-              <Text style={styles.captchaHint}>
-                🔍 自动识别失败，请输入验证码
-              </Text>
-              <View style={styles.captchaRow}>
-                <TextInput
-                  ref={captchaRef}
-                  style={[styles.input, styles.captchaInput]}
-                  placeholder="输入验证码"
-                  value={captchaText}
-                  onChangeText={setCaptchaText}
-                  returnKeyType="done"
-                  onSubmitEditing={handleManualLogin}
-                  autoCapitalize="none"
-                  editable={!loading}
-                />
-                <TouchableOpacity
-                  style={styles.captchaImgBtn}
-                  onPress={fetchCaptcha}
-                  disabled={captchaLoading}
-                  activeOpacity={0.7}
-                >
-                  {captchaLoading ? (
-                    <ActivityIndicator size="small" color="#1677FF" />
-                  ) : captchaImage ? (
-                    <Image
-                      source={{ uri: captchaImage }}
-                      style={styles.captchaImg}
-                      resizeMode="contain"
-                    />
-                  ) : (
-                    <Text style={styles.captchaBtnText}>点击获取{'\n'}验证码</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </View>
-          )}
-
-          {/* 登录按钮 */}
-          <TouchableOpacity
-            style={[styles.loginBtn, loading && styles.loginBtnDisabled]}
-            onPress={manualMode ? handleManualLogin : handleLogin}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            {loading ? (
-              <View style={styles.btnRow}>
-                <ActivityIndicator color="#fff" size="small" />
-                <Text style={styles.loginBtnText}>
-                  {manualMode ? '  登录中...' : '  自动识别中...'}
-                </Text>
-              </View>
-            ) : (
-              <Text style={styles.loginBtnText}>
-                {manualMode ? '手动登录' : '登 录'}
-              </Text>
-            )}
+          {manualMode && <View style={styles.captchaRow}>
+            <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="验证码" value={captchaText} onChangeText={setCaptchaText} editable={!loading} autoCapitalize="none" returnKeyType="done" onSubmitEditing={submit} />
+            <TouchableOpacity style={styles.captcha} onPress={() => fetchCaptcha()} disabled={loading || captchaLoading || !username.trim()} accessibilityLabel="刷新验证码">
+              {captchaLoading ? <ActivityIndicator color={colors.primary} /> : captchaData?.captchaImage ? <Image source={{ uri: captchaData.captchaImage.startsWith('data:') ? captchaData.captchaImage : 'data:image/png;base64,' + captchaData.captchaImage }} style={{ width: 110, height: 48 }} resizeMode="contain" /> : <Text style={styles.link}>获取验证码</Text>}
+            </TouchableOpacity>
+          </View>}
+          {loading && autoStatus ? <Text style={styles.progress}>{autoStatus}</Text> : null}
+          {error ? <Text style={styles.error} accessibilityLiveRegion="polite">{error}</Text> : null}
+          <TouchableOpacity style={[styles.submit, loading && { opacity: 0.6 }]} onPress={submit} disabled={loading}>
+            {loading ? <View style={styles.buttonRow}><ActivityIndicator color="#fff" /><Text style={styles.submitText}> 正在登录…</Text></View> : <Text style={styles.submitText}>登录</Text>}
           </TouchableOpacity>
-
-          <Text style={styles.tip}>
-            💡 自动获取验证码并OCR识别，最多重试5次{'\n'}
-            失败后展示验证码图片供手动输入
-          </Text>
+          <Text style={styles.hint}>自动识别失败时可手动输入验证码。账号将保存在本机用于登录过期后的自动重登。</Text>
         </View>
+        <Text style={styles.footer}>预约 · 学习 · 从容安排</Text>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
-
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f5f7fa' },
-  scrollContent: { flexGrow: 1, justifyContent: 'center', padding: 24 },
-  header: { alignItems: 'center', marginBottom: 40 },
-  appName: { fontSize: 26, fontWeight: 'bold', color: '#1677FF', marginBottom: 8 },
-  subtitle: { fontSize: 14, color: '#999' },
-
-  form: {
-    backgroundColor: '#fff', borderRadius: 16, padding: 24,
-    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08, shadowRadius: 12, elevation: 4,
-  },
-
-  inputGroup: { marginBottom: 16 },
-  label: { fontSize: 14, fontWeight: '600', color: '#333', marginBottom: 6 },
-  input: {
-    borderWidth: 1, borderColor: '#e0e0e0', borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 12, fontSize: 16,
-    backgroundColor: '#fafafa', color: '#333',
-  },
-
-  // 自动登录进度
-  statusBar: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: '#f0f5ff', borderRadius: 10, padding: 12,
-    marginBottom: 16, gap: 10,
-  },
-  statusText: { flex: 1, fontSize: 13, color: '#1677FF' },
-  attemptText: { fontSize: 12, color: '#999' },
-
-  // 手动验证码
-  captchaBox: {
-    backgroundColor: '#fffbe6', borderRadius: 10, padding: 12,
-    marginBottom: 16, borderWidth: 1, borderColor: '#ffe58f',
-  },
-  captchaHint: { fontSize: 13, color: '#ad6800', marginBottom: 10 },
-  captchaRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  captchaInput: { flex: 1 },
-  captchaImgBtn: {
-    width: 120, height: 48, borderWidth: 1, borderColor: '#d9d9d9',
-    borderRadius: 8, justifyContent: 'center', alignItems: 'center',
-    backgroundColor: '#fafafa', overflow: 'hidden',
-  },
-  captchaImg: { width: 120, height: 48 },
-  captchaBtnText: { fontSize: 11, color: '#1677FF', textAlign: 'center', lineHeight: 16 },
-
-  // 登录按钮
-  loginBtn: {
-    backgroundColor: '#1677FF', borderRadius: 12,
-    paddingVertical: 14, alignItems: 'center', marginTop: 8,
-  },
-  loginBtnDisabled: { opacity: 0.7 },
-  loginBtnText: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
-  btnRow: { flexDirection: 'row', alignItems: 'center' },
-  tip: { fontSize: 12, color: '#bbb', textAlign: 'center', marginTop: 16, lineHeight: 18 },
+  container: { flex: 1, backgroundColor: colors.background }, content: { flexGrow: 1, justifyContent: 'center', paddingHorizontal: 24 },
+  mark: { width: 64, height: 64, backgroundColor: colors.primary, borderRadius: 20, alignItems: 'center', justifyContent: 'center', alignSelf: 'center' }, markText: { fontSize: 32, color: '#fff', fontWeight: '700' },
+  title: { fontSize: 30, color: colors.text, fontWeight: '700', textAlign: 'center', marginTop: 16 }, subtitle: { fontSize: 13, color: colors.muted, textAlign: 'center', marginTop: 8, marginBottom: 28 },
+  form: { backgroundColor: '#fff', borderRadius: 22, padding: 22, borderWidth: 1, borderColor: colors.border }, formTitle: { fontSize: 20, fontWeight: '600', color: colors.text, marginBottom: 18 },
+  label: { color: colors.text, fontSize: 13, fontWeight: '600', marginBottom: 8 }, input: { backgroundColor: '#f8faff', borderWidth: 1, borderColor: colors.border, borderRadius: 12, fontSize: 16, padding: 14, color: colors.text, marginBottom: 16 },
+  modeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, modeLabel: { color: colors.muted, fontSize: 12 }, modeButton: { minHeight: 44, justifyContent: 'center' }, link: { color: colors.primary, fontSize: 12 },
+  captchaRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 12 }, captcha: { width: 112, height: 52, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: 10 },
+  progress: { color: colors.primary, fontSize: 13, lineHeight: 20, paddingVertical: 10 }, error: { color: colors.danger, fontSize: 13, lineHeight: 20, marginBottom: 12 },
+  submit: { backgroundColor: colors.primary, borderRadius: 12, alignItems: 'center', padding: 15, marginTop: 8 }, submitText: { color: '#fff', fontSize: 16, fontWeight: '600' }, buttonRow: { flexDirection: 'row', alignItems: 'center' },
+  hint: { fontSize: 12, color: colors.muted, lineHeight: 19, marginTop: 16 }, footer: { fontSize: 12, color: colors.muted, textAlign: 'center', marginTop: 24 },
 });
+
